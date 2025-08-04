@@ -164,5 +164,6 @@ namespace HardpointCS2
 
             commandInfo.ReplyToCommand($"Zone '{zone.Name}' completed with {zone.Points.Count} points and is now visible!");
         }
+        #endregion
     }
 }
