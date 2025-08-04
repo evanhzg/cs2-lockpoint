@@ -11,28 +11,59 @@ namespace HardpointCS2.Services
 {
     public class ZoneVisualization
     {
-        private List<CBeam> activeBeams = new();
-        private List<CPointClientUIWorldPanel> activeSprites = new();
+        private Dictionary<Zone, List<CBeam>> zoneBeams = new();
 
         public void DrawZone(Zone zone)
         {
             if (zone.Points == null || zone.Points.Count < 3) return;
 
-            CreateGroundOverlay(zone);
-            CreateZoneBorders(zone); // Keep borders for clarity
+            // Clear existing beams for this zone
+            ClearZoneBeams(zone);
+
+            // Create new beams with current color
+            var beams = new List<CBeam>();
+            CreateGroundOverlay(zone, beams);
+            CreateZoneBorders(zone, beams);
+            
+            zoneBeams[zone] = beams;
         }
 
-        private void CreateGroundOverlay(Zone zone)
+        public void UpdateZoneColor(Zone zone)
         {
-            // Calculate the bounding box of the zone
+            if (!zoneBeams.ContainsKey(zone)) return;
+
+            var color = GetZoneColor(zone.GetZoneState());
+            
+            // Instead of just updating the color, recreate the zone visualization
+            // This ensures the color change is properly applied
+            Server.NextFrame(() =>
+            {
+                DrawZone(zone);
+            });
+        }
+
+        private Color GetZoneColor(ZoneState state)
+        {
+            return state switch
+            {
+                ZoneState.CTControlled => Color.FromArgb(180, Color.Blue),
+                ZoneState.TControlled => Color.FromArgb(180, Color.Red),
+                ZoneState.Contested => Color.FromArgb(180, Color.Purple),
+                ZoneState.Neutral => Color.FromArgb(180, Color.Green),
+                _ => Color.FromArgb(180, Color.Green)
+            };
+        }
+
+        private void CreateGroundOverlay(Zone zone, List<CBeam> beams)
+        {
             var minX = zone.Points.Min(p => p.X);
             var maxX = zone.Points.Max(p => p.X);
             var minY = zone.Points.Min(p => p.Y);
             var maxY = zone.Points.Max(p => p.Y);
             var avgZ = zone.Points.Average(p => p.Z);
 
-            // Create a grid of small beams to simulate ground fill
-            var gridSize = 32.0f; // Distance between fill elements
+            var gridSize = 32.0f;
+            var color = GetZoneColor(zone.GetZoneState());
             
             for (float x = minX; x <= maxX; x += gridSize)
             {
@@ -40,24 +71,38 @@ namespace HardpointCS2.Services
                 {
                     var testPoint = new CSVector(x, y, avgZ);
                     
-                    // Only place fill if point is inside the zone polygon
                     if (zone.IsPlayerInZone(testPoint))
                     {
-                        CreateGroundBeam(testPoint);
+                        var beam = CreateGroundBeam(testPoint, color);
+                        if (beam != null) beams.Add(beam);
                     }
                 }
             }
         }
 
-        private void CreateGroundBeam(CSVector position)
+        private void CreateZoneBorders(Zone zone, List<CBeam> beams)
+        {
+            var color = GetZoneColor(zone.GetZoneState());
+            
+            for (int i = 0; i < zone.Points.Count; i++)
+            {
+                var startPoint = zone.Points[i];
+                var endPoint = zone.Points[(i + 1) % zone.Points.Count];
+
+                var beam = CreateBorderBeam(startPoint, endPoint, color);
+                if (beam != null) beams.Add(beam);
+            }
+        }
+
+        private CBeam? CreateGroundBeam(CSVector position, Color color)
         {
             var beam = Utilities.CreateEntityByName<CBeam>("beam");
-            if (beam == null) return;
+            if (beam == null) return null;
 
             beam.StartFrame = 0;
             beam.FrameRate = 0;
             beam.LifeState = 1;
-            beam.Width = 15; // Wider beam for ground fill
+            beam.Width = 15;
             beam.EndWidth = 15;
             beam.Amplitude = 0;
             beam.Speed = 0;
@@ -65,43 +110,29 @@ namespace HardpointCS2.Services
             beam.BeamType = BeamType_t.BEAM_POINTS;
             beam.FadeLength = 0;
 
-            // Semi-transparent green for ground fill
-            beam.Render = System.Drawing.Color.FromArgb(80, System.Drawing.Color.LimeGreen);
+            beam.Render = color;
 
-            // Create a very short vertical beam (ground to slightly above)
             beam.EndPos.X = position.X;
             beam.EndPos.Y = position.Y;
-            beam.EndPos.Z = position.Z + 2.0f; // Very short beam
+            beam.EndPos.Z = position.Z + 2.0f;
 
             beam.Teleport(new CSVector(position.X, position.Y, position.Z - 1.0f), 
                          new QAngle(0, 0, 0), 
                          new CSVector(0, 0, 0));
             
             beam.DispatchSpawn();
-            activeBeams.Add(beam);
+            return beam;
         }
 
-        private void CreateZoneBorders(Zone zone)
-        {
-            // Create border beams for zone outline
-            for (int i = 0; i < zone.Points.Count; i++)
-            {
-                var startPoint = zone.Points[i];
-                var endPoint = zone.Points[(i + 1) % zone.Points.Count];
-
-                CreateBorderBeam(startPoint, endPoint);
-            }
-        }
-
-        private void CreateBorderBeam(CSVector startPos, CSVector endPos)
+        private CBeam? CreateBorderBeam(CSVector startPos, CSVector endPos, Color color)
         {
             var beam = Utilities.CreateEntityByName<CBeam>("beam");
-            if (beam == null) return;
+            if (beam == null) return null;
 
             beam.StartFrame = 0;
             beam.FrameRate = 0;
             beam.LifeState = 1;
-            beam.Width = 5; // Thinner for borders
+            beam.Width = 5;
             beam.EndWidth = 5;
             beam.Amplitude = 0;
             beam.Speed = 50;
@@ -109,34 +140,42 @@ namespace HardpointCS2.Services
             beam.BeamType = BeamType_t.BEAM_POINTS;
             beam.FadeLength = 10.0f;
 
-            // Bright green for borders
-            beam.Render = System.Drawing.Color.FromArgb(255, System.Drawing.Color.Green);
+            beam.Render = color;
 
             beam.EndPos.X = endPos.X;
             beam.EndPos.Y = endPos.Y;
-            beam.EndPos.Z = endPos.Z + 20.0f; // Taller border beam
+            beam.EndPos.Z = endPos.Z + 20.0f;
 
             beam.Teleport(new CSVector(startPos.X, startPos.Y, startPos.Z + 20.0f), 
                          new QAngle(0, 0, 0), 
                          new CSVector(0, 0, 0));
             
             beam.DispatchSpawn();
-            activeBeams.Add(beam);
+            return beam;
+        }
+
+        private void ClearZoneBeams(Zone zone)
+        {
+            if (zoneBeams.ContainsKey(zone))
+            {
+                foreach (var beam in zoneBeams[zone])
+                {
+                    beam?.Remove();
+                }
+                zoneBeams[zone].Clear();
+            }
         }
 
         public void ClearZoneVisualization()
         {
-            foreach (var beam in activeBeams)
+            foreach (var beamList in zoneBeams.Values)
             {
-                beam?.Remove();
+                foreach (var beam in beamList)
+                {
+                    beam?.Remove();
+                }
             }
-            activeBeams.Clear();
-
-            foreach (var sprite in activeSprites)
-            {
-                sprite?.Remove();
-            }
-            activeSprites.Clear();
+            zoneBeams.Clear();
         }
     }
 }
