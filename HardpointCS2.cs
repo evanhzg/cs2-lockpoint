@@ -21,18 +21,33 @@ namespace HardpointCS2
         public override string ModuleDescription => "Hardpoint game mode for CS2";
 
         private ZoneVisualization? _zoneVisualization;
+        private ZoneManager? _zoneManager;
         private readonly Dictionary<CCSPlayerController, Zone> _activeZones = new();
-        private readonly List<Zone> _completedZones = new();
         private System.Timers.Timer? _zoneCheckTimer;
 
         public override void Load(bool hotReload)
         {
             Logger.LogInformation("HardpointCS2 plugin loaded");
             _zoneVisualization = new ZoneVisualization();
+            _zoneManager = new ZoneManager(ModuleDirectory);
+
+            var mapName = Server.MapName;
+            Logger.LogInformation($"Loading zones for map: {mapName}");
+            
+            _zoneManager.LoadZonesForMap(mapName);
+
+            // Visualize loaded zones
+            foreach (var zone in _zoneManager.Zones)
+            {
+                _zoneVisualization.DrawZone(zone);
+                Logger.LogInformation($"Visualizing zone: {zone.Name}");
+            }
 
             _zoneCheckTimer = new System.Timers.Timer(500);
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
             _zoneCheckTimer.Start();
+
+            Logger.LogInformation($"Loaded {_zoneManager.Zones.Count} zones for map {mapName}");
         }
 
         public override void Unload(bool hotReload)
@@ -43,27 +58,15 @@ namespace HardpointCS2
             Logger.LogInformation("HardpointCS2 plugin unloaded");
         }
 
-private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
+        private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
         {
             Server.NextFrame(() =>
             {
-                // Debug: Check if we have zones to monitor
-                if (_completedZones.Count == 0)
-                {
-                    // Uncomment for debugging
-                    // Server.PrintToChatAll("No completed zones to check");
-                    return;
-                }
-
-                foreach (var zone in _completedZones)
+                foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())
                 {
                     var previousState = zone.GetZoneState();
                     zone.PlayersInZone.Clear();
 
-                    // Debug: Log zone being checked
-                    // Server.PrintToChatAll($"Checking zone: {zone.Name} with {zone.Points.Count} points");
-
-                    // Check all players
                     foreach (var player in Utilities.GetPlayers())
                     {
                         if (player?.IsValid == true && player.PlayerPawn?.Value != null && player.PawnIsAlive)
@@ -74,39 +77,52 @@ private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
                                 player.PlayerPawn.Value.AbsOrigin!.Z
                             );
 
-                            // Debug: Log player position
-                            // Server.PrintToChatAll($"Player {player.PlayerName} at {playerPos.X:F1}, {playerPos.Y:F1}, {playerPos.Z:F1}");
-
                             if (zone.IsPlayerInZone(playerPos))
                             {
                                 zone.PlayersInZone.Add(player);
-                                // Debug: Player entered zone
-                                Server.PrintToChatAll($"Player {player.PlayerName} entered zone {zone.Name}!");
                             }
                         }
                     }
 
-                    var newState = zone.GetZoneState();
-                    
-                    // Debug: Log state changes
-                    if (newState != previousState)
+                    if (zone.GetZoneState() != previousState)
                     {
-                        Server.PrintToChatAll($"Zone {zone.Name} state changed from {previousState} to {newState}");
                         _zoneVisualization?.UpdateZoneColor(zone);
-                    }
-
-                    // Debug: Log current zone status
-                    if (zone.PlayersInZone.Count > 0)
-                    {
-                        var ctCount = zone.PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist);
-                        var tCount = zone.PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.Terrorist);
-                        Server.PrintToChatAll($"Zone {zone.Name}: {ctCount} CTs, {tCount} Ts");
                     }
                 }
             });
         }
 
     #region Commands
+
+    // Add command to manually save zones
+        [ConsoleCommand("css_savezones", "Saves all zones to file.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandSaveZones(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var mapName = Server.MapName;
+            _zoneManager?.SaveZonesForMap(mapName, _zoneManager.Zones);
+            commandInfo.ReplyToCommand($"Saved {_zoneManager?.Zones.Count} zones for map {mapName}");
+        }
+
+        // Add command to reload zones
+        [ConsoleCommand("css_reloadzones", "Reloads zones from file.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandReloadZones(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var mapName = Server.MapName;
+            _zoneVisualization?.ClearZoneVisualization();
+            _zoneManager?.LoadZonesForMap(mapName);
+
+            foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())
+            {
+                _zoneVisualization?.DrawZone(zone);
+            }
+
+            commandInfo.ReplyToCommand($"Reloaded {_zoneManager?.Zones.Count} zones for map {mapName}");
+        }
+
         [ConsoleCommand("css_addzone", "Creates a new hardpoint zone.")]
         [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
@@ -228,21 +244,95 @@ private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
             var centerZ = zone.Points.Sum(p => p.Z) / zone.Points.Count;
             zone.Center = new CSVector(centerX, centerY, centerZ);
 
-            _completedZones.Add(zone);
+            Server.PrintToConsole($"[HardpointCS2] Adding zone '{zone.Name}' with {zone.Points.Count} points");
+            
+            _zoneManager?.AddZone(zone);
             _zoneVisualization?.DrawZone(zone);
+
+            // Debug: Check zone count before saving
+            var totalZones = _zoneManager?.Zones.Count ?? 0;
+            Server.PrintToConsole($"[HardpointCS2] Total zones in manager: {totalZones}");
+
+            // Save immediately
+            var mapName = Server.MapName;
+            Server.PrintToConsole($"[HardpointCS2] Calling SaveZonesForMap for map: {mapName}");
+            
+            if (_zoneManager != null)
+            {
+                _zoneManager.SaveZonesForMap(mapName, _zoneManager.Zones);
+            }
 
             _activeZones.Remove(player);
 
-            // Debug: Confirm zone was added
-            commandInfo.ReplyToCommand($"Zone '{zone.Name}' completed with {zone.Points.Count} points and is now visible!");
-            Server.PrintToChatAll($"Zone '{zone.Name}' added to completed zones. Total zones: {_completedZones.Count}");
+            commandInfo.ReplyToCommand($"Zone '{zone.Name}' completed and saved! Total zones: {_zoneManager?.Zones.Count}");
+            Logger.LogInformation($"Zone '{zone.Name}' saved for map {mapName}");
+        }
+
+        [ConsoleCommand("css_listzones", "Lists all zones.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandListZones(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var zones = _zoneManager?.Zones ?? new List<Zone>();
+            commandInfo.ReplyToCommand($"Total zones: {zones.Count}");
             
-            // Debug: Print zone points
-            for (int i = 0; i < zone.Points.Count; i++)
+            foreach (var zone in zones)
             {
-                var point = zone.Points[i];
-                Server.PrintToChatAll($"Zone {zone.Name} Point {i + 1}: {point.X:F1}, {point.Y:F1}, {point.Z:F1}");
+                commandInfo.ReplyToCommand($"- {zone.Name} ({zone.Points.Count} points)");
             }
+        }
+
+        [ConsoleCommand("css_debugzones", "Debug zone system.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandDebugZones(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var mapName = Server.MapName;
+            var zonesPath = _zoneManager?.GetZonesDirectoryPath();
+            
+            // Get the assembly location for debugging
+            var assemblyLocation = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            var assemblyDirectory = Path.GetDirectoryName(assemblyLocation);
+            
+            commandInfo.ReplyToCommand($"Map: {mapName}");
+            commandInfo.ReplyToCommand($"Assembly location: {assemblyLocation}");
+            commandInfo.ReplyToCommand($"Assembly directory: {assemblyDirectory}");
+            commandInfo.ReplyToCommand($"Zones directory: {zonesPath}");
+            commandInfo.ReplyToCommand($"Zones in memory: {_zoneManager?.Zones.Count ?? 0}");
+            
+            // Check if directory exists
+            if (!string.IsNullOrEmpty(zonesPath))
+            {
+                commandInfo.ReplyToCommand($"Directory exists: {Directory.Exists(zonesPath)}");
+                
+                // Check if file exists
+                var filePath = Path.Combine(zonesPath, $"{mapName}.json");
+                commandInfo.ReplyToCommand($"Full file path: {filePath}");
+                commandInfo.ReplyToCommand($"Zone file exists: {File.Exists(filePath)}");
+                
+                if (File.Exists(filePath))
+                {
+                    var fileInfo = new FileInfo(filePath);
+                    commandInfo.ReplyToCommand($"File size: {fileInfo.Length} bytes");
+                    commandInfo.ReplyToCommand($"File created: {fileInfo.CreationTime}");
+                    commandInfo.ReplyToCommand($"File modified: {fileInfo.LastWriteTime}");
+                }
+                
+                // List all files in zones directory
+                if (Directory.Exists(zonesPath))
+                {
+                    var files = Directory.GetFiles(zonesPath, "*.json");
+                    commandInfo.ReplyToCommand($"JSON files in zones dir: {files.Length}");
+                    foreach (var file in files)
+                    {
+                        commandInfo.ReplyToCommand($"- {Path.GetFileName(file)}");
+                    }
+                }
+            }
+            
+            // Also print to server console for easier copying
+            Server.PrintToConsole($"[HardpointCS2] FULL DEBUG PATH: {zonesPath}");
+            Server.PrintToConsole($"[HardpointCS2] ASSEMBLY PATH: {assemblyLocation}");
         }
 
         [ConsoleCommand("css_testzone", "Test if you're in a zone.")]
@@ -263,10 +353,9 @@ private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
             );
 
             commandInfo.ReplyToCommand($"Your position: {playerPos.X:F1}, {playerPos.Y:F1}, {playerPos.Z:F1}");
-            commandInfo.ReplyToCommand($"Total completed zones: {_completedZones.Count}");
+            commandInfo.ReplyToCommand($"Total completed zones: {_zoneManager?.Zones.Count ?? 0}");
 
-            foreach (var zone in _completedZones)
-            {
+            foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())            {
                 bool inZone = zone.IsPlayerInZone(playerPos);
                 commandInfo.ReplyToCommand($"Zone '{zone.Name}': {(inZone ? "INSIDE" : "OUTSIDE")}");
                 
