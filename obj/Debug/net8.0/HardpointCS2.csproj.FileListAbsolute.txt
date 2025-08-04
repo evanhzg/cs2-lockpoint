@@ -1,0 +1,12 @@
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.csproj.AssemblyReference.cache
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.GeneratedMSBuildEditorConfig.editorconfig
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.AssemblyInfoInputs.cache
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.AssemblyInfo.cs
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.csproj.CoreCompileInputs.cache
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/HardpointCS2.deps.json
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/HardpointCS2.dll
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/HardpointCS2.pdb
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.dll
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/refint/HardpointCS2.dll
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/HardpointCS2.pdb
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/ref/HardpointCS2.dll
