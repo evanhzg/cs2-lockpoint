@@ -22,19 +22,70 @@ namespace HardpointCS2.Models
             return IsPointInPolygon(playerPos, Points);
         }
 
+        public void CleanupInvalidPlayers()
+        {
+            try
+            {
+                PlayersInZone.RemoveAll(p => 
+                    p?.IsValid != true || 
+                    p.Connected != PlayerConnectedState.PlayerConnected ||
+                    p.PlayerPawn?.Value == null);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Zone] Error cleaning up players: {ex.Message}");
+                // If cleanup fails, just clear the entire list
+                PlayersInZone.Clear();
+            }
+        }
+
         public ZoneState GetZoneState()
         {
-            var ctCount = PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist);
-            var tCount = PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.Terrorist);
+            try
+            {
+                // Filter out invalid players first and ensure they have valid entities
+                var validPlayers = PlayersInZone.Where(p => 
+                    p?.IsValid == true && 
+                    p.Connected == PlayerConnectedState.PlayerConnected &&
+                    p.PlayerPawn?.Value != null).ToList();
+                
+                int ctCount = 0;
+                int tCount = 0;
+                
+                foreach (var player in validPlayers)
+                {
+                    try
+                    {
+                        if (player?.IsValid == true && player.TeamNum != null)
+                        {
+                            if (player.TeamNum == (byte)CsTeam.CounterTerrorist)
+                                ctCount++;
+                            else if (player.TeamNum == (byte)CsTeam.Terrorist)
+                                tCount++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Skip this player if we can't access their team
+                        Server.PrintToConsole($"[Zone] Error accessing player TeamNum: {ex.Message}");
+                        continue;
+                    }
+                }
 
-            if (ctCount > 0 && tCount > 0)
-                return ZoneState.Contested; // Purple
-            else if (ctCount > 0)
-                return ZoneState.CTControlled; // Blue
-            else if (tCount > 0)
-                return ZoneState.TControlled; // Red
-            else
-                return ZoneState.Neutral; // Green
+                if (ctCount > 0 && tCount > 0)
+                    return ZoneState.Contested; // Purple
+                else if (ctCount > 0)
+                    return ZoneState.CTControlled; // Blue
+                else if (tCount > 0)
+                    return ZoneState.TControlled; // Red
+                else
+                    return ZoneState.Neutral; // White
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Zone] Error in GetZoneState: {ex.Message}");
+                return ZoneState.Neutral; // Default to neutral on any error
+            }
         }
 
         private bool IsPointInPolygon(CSVector point, List<CSVector> polygon)

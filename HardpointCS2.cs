@@ -24,6 +24,7 @@ namespace HardpointCS2
         private ZoneManager? _zoneManager;
         private readonly Dictionary<CCSPlayerController, Zone> _activeZones = new();
         private System.Timers.Timer? _zoneCheckTimer;
+        private Zone? activeZone;
 
         public override void Load(bool hotReload)
         {
@@ -31,23 +32,122 @@ namespace HardpointCS2
             _zoneVisualization = new ZoneVisualization();
             _zoneManager = new ZoneManager(ModuleDirectory);
 
-            var mapName = Server.MapName;
-            Logger.LogInformation($"Loading zones for map: {mapName}");
-            
-            _zoneManager.LoadZonesForMap(mapName);
-
-            // Visualize loaded zones
-            foreach (var zone in _zoneManager.Zones)
-            {
-                _zoneVisualization.DrawZone(zone);
-                Logger.LogInformation($"Visualizing zone: {zone.Name}");
-            }
+            RegisterListener<Listeners.OnMapStart>(OnMapStart);
+            RegisterEventHandler<EventRoundStart>(OnRoundStart);
 
             _zoneCheckTimer = new System.Timers.Timer(500);
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
             _zoneCheckTimer.Start();
+        }
 
-            Logger.LogInformation($"Loaded {_zoneManager.Zones.Count} zones for map {mapName}");
+        private void OnMapStart(string mapName)
+        {
+            Server.NextFrame(() =>
+            {
+                Server.PrintToConsole($"[HardpointCS2] Map started: {mapName}");
+                Logger.LogInformation($"Loading zones for map: {mapName}");
+                
+                _zoneManager?.LoadZonesForMap(mapName);
+
+                Logger.LogInformation($"Loaded {_zoneManager?.Zones.Count ?? 0} zones for map {mapName}");
+            });
+        }
+
+        private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
+        {
+            // Stop zone checking during round transition
+            _zoneCheckTimer?.Stop();
+            
+            AddTimer(3.0f, () =>
+            {
+                try
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Round started - cleaning up and redrawing zones");
+                    
+                    // Clear all existing visualizations completely
+                    try
+                    {
+                        _zoneVisualization?.ClearZoneVisualization();
+                    }
+                    catch (Exception ex)
+                    {
+                        Server.PrintToConsole($"[HardpointCS2] Error clearing visualizations: {ex.Message}");
+                    }
+                    
+                    // Clear players from all zones
+                    foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())
+                    {
+                        zone.PlayersInZone.Clear();
+                    }
+                    
+                    // Wait a bit more before redrawing
+                    Server.NextFrame(() =>
+                    {
+                        DrawRandomZone();
+                        
+                        // Restart zone checking
+                        _zoneCheckTimer?.Start();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error in OnRoundStart: {ex.Message}");
+                    // Make sure to restart the timer even if there's an error
+                    _zoneCheckTimer?.Start();
+                }
+            });
+            
+            return HookResult.Continue;
+        }
+
+        private void DrawAllZones()
+        {
+            // Only draw the active zone if one is selected
+            if (activeZone != null)
+            {
+                try
+                {
+                    // Clear any existing visualizations first
+                    _zoneVisualization?.ClearZoneVisualization();
+                    
+                    Logger.LogInformation($"Drawing active zone: {activeZone.Name} with {activeZone.Points.Count} points");
+                    _zoneVisualization?.DrawZone(activeZone);
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error drawing active zone {activeZone.Name}: {ex.Message}");
+                }
+            }
+            else
+            {
+                // If no active zone, clear all visualizations
+                _zoneVisualization?.ClearZoneVisualization();
+                Logger.LogInformation("No active zone selected - clearing all visualizations");
+            }
+        }
+
+        private void DrawRandomZone()
+        {
+            // Draw a random zone for testing purposes
+            if (_zoneManager?.Zones.Count > 0)
+            {
+                // Clear all existing visualizations first
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                var random = new Random();
+                var randomZone = _zoneManager.Zones[random.Next(_zoneManager.Zones.Count)];
+                
+                // Only draw the selected zone
+                _zoneVisualization?.DrawZone(randomZone);
+                Server.PrintToConsole($"[HardpointCS2] Drew random zone: {randomZone.Name}");
+                Server.PrintToChatAll($"[HardpointCS2] Active Zone: {randomZone.Name}");
+                activeZone = randomZone;
+            }
+            else
+            {
+                Server.PrintToConsole("[HardpointCS2] No zones available to draw");
+                activeZone = null;
+            }
         }
 
         public override void Unload(bool hotReload)
@@ -62,39 +162,60 @@ namespace HardpointCS2
         {
             Server.NextFrame(() =>
             {
-                foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())
+                try
                 {
-                    var previousState = zone.GetZoneState();
-                    zone.PlayersInZone.Clear();
-
-                    foreach (var player in Utilities.GetPlayers())
+                    // Only check the active zone
+                    if (activeZone != null)
                     {
-                        if (player?.IsValid == true && player.PlayerPawn?.Value != null && player.PawnIsAlive)
-                        {
-                            var playerPos = new CSVector(
-                                player.PlayerPawn.Value.AbsOrigin!.X,
-                                player.PlayerPawn.Value.AbsOrigin!.Y,
-                                player.PlayerPawn.Value.AbsOrigin!.Z
-                            );
+                        var previousState = activeZone.GetZoneState();
+                        
+                        // Clear and rebuild the players list with only valid players
+                        activeZone.PlayersInZone.Clear();
 
-                            if (zone.IsPlayerInZone(playerPos))
+                        foreach (var player in Utilities.GetPlayers())
+                        {
+                            if (player?.IsValid == true && 
+                                player.Connected == PlayerConnectedState.PlayerConnected &&
+                                player.PlayerPawn?.Value != null && 
+                                player.PawnIsAlive)
                             {
-                                zone.PlayersInZone.Add(player);
+                                var playerPos = new CSVector(
+                                    player.PlayerPawn.Value.AbsOrigin!.X,
+                                    player.PlayerPawn.Value.AbsOrigin!.Y,
+                                    player.PlayerPawn.Value.AbsOrigin!.Z
+                                );
+
+                                if (activeZone.IsPlayerInZone(playerPos))
+                                {
+                                    activeZone.PlayersInZone.Add(player);
+                                }
+                            }
+                        }
+
+                        // Only update zone color if state changed
+                        var currentState = activeZone.GetZoneState();
+                        if (currentState != previousState)
+                        {
+                            try
+                            {
+                                _zoneVisualization?.UpdateZoneColor(activeZone);
+                            }
+                            catch (Exception ex)
+                            {
+                                Server.PrintToConsole($"[HardpointCS2] Error updating zone color: {ex.Message}");
                             }
                         }
                     }
-
-                    if (zone.GetZoneState() != previousState)
-                    {
-                        _zoneVisualization?.UpdateZoneColor(zone);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error in CheckPlayerZones: {ex.Message}");
                 }
             });
         }
 
     #region Commands
 
-    // Add command to manually save zones
         [ConsoleCommand("css_savezones", "Saves all zones to file.")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
@@ -282,57 +403,58 @@ namespace HardpointCS2
             }
         }
 
-        [ConsoleCommand("css_debugzones", "Debug zone system.")]
+        [ConsoleCommand("css_debugzoneload", "Debug zone loading.")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandDebugZones(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandDebugZoneLoad(CCSPlayerController? player, CommandInfo commandInfo)
         {
             var mapName = Server.MapName;
-            var zonesPath = _zoneManager?.GetZonesDirectoryPath();
-            
-            // Get the assembly location for debugging
-            var assemblyLocation = System.Reflection.Assembly.GetExecutingAssembly().Location;
-            var assemblyDirectory = Path.GetDirectoryName(assemblyLocation);
+            var zonesPath = Path.Combine(ModuleDirectory, "zones");
             
             commandInfo.ReplyToCommand($"Map: {mapName}");
-            commandInfo.ReplyToCommand($"Assembly location: {assemblyLocation}");
-            commandInfo.ReplyToCommand($"Assembly directory: {assemblyDirectory}");
+            commandInfo.ReplyToCommand($"Module directory: {ModuleDirectory}");
             commandInfo.ReplyToCommand($"Zones directory: {zonesPath}");
             commandInfo.ReplyToCommand($"Zones in memory: {_zoneManager?.Zones.Count ?? 0}");
             
-            // Check if directory exists
-            if (!string.IsNullOrEmpty(zonesPath))
+            var filePath = Path.Combine(zonesPath, $"{mapName}.json");
+            commandInfo.ReplyToCommand($"Expected file: {filePath}");
+            commandInfo.ReplyToCommand($"File exists: {File.Exists(filePath)}");
+            
+            if (Directory.Exists(zonesPath))
             {
-                commandInfo.ReplyToCommand($"Directory exists: {Directory.Exists(zonesPath)}");
-                
-                // Check if file exists
-                var filePath = Path.Combine(zonesPath, $"{mapName}.json");
-                commandInfo.ReplyToCommand($"Full file path: {filePath}");
-                commandInfo.ReplyToCommand($"Zone file exists: {File.Exists(filePath)}");
-                
-                if (File.Exists(filePath))
+                var files = Directory.GetFiles(zonesPath, "*.json");
+                commandInfo.ReplyToCommand($"JSON files found: {files.Length}");
+                foreach (var file in files)
                 {
-                    var fileInfo = new FileInfo(filePath);
-                    commandInfo.ReplyToCommand($"File size: {fileInfo.Length} bytes");
-                    commandInfo.ReplyToCommand($"File created: {fileInfo.CreationTime}");
-                    commandInfo.ReplyToCommand($"File modified: {fileInfo.LastWriteTime}");
-                }
-                
-                // List all files in zones directory
-                if (Directory.Exists(zonesPath))
-                {
-                    var files = Directory.GetFiles(zonesPath, "*.json");
-                    commandInfo.ReplyToCommand($"JSON files in zones dir: {files.Length}");
-                    foreach (var file in files)
-                    {
-                        commandInfo.ReplyToCommand($"- {Path.GetFileName(file)}");
-                    }
+                    commandInfo.ReplyToCommand($"- {Path.GetFileName(file)}");
                 }
             }
+            else
+            {
+                commandInfo.ReplyToCommand($"Zones directory doesn't exist!");
+            }
+        }
+
+        [ConsoleCommand("css_redrawzones", "Redraws all zones.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandRedrawZones(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (_zoneVisualization == null || _zoneManager == null)
+            {
+                commandInfo.ReplyToCommand("Zone system not initialized");
+                return;
+            }
+
+            _zoneVisualization.ClearZoneVisualization();
             
-            // Also print to server console for easier copying
-            Server.PrintToConsole($"[HardpointCS2] FULL DEBUG PATH: {zonesPath}");
-            Server.PrintToConsole($"[HardpointCS2] ASSEMBLY PATH: {assemblyLocation}");
+            foreach (var zone in _zoneManager.Zones)
+            {
+                Server.PrintToConsole($"Redrawing zone: {zone.Name}");
+                _zoneVisualization.DrawZone(zone);
+            }
+            
+            commandInfo.ReplyToCommand($"Redrawn {_zoneManager.Zones.Count} zones");
         }
 
         [ConsoleCommand("css_testzone", "Test if you're in a zone.")]
@@ -369,6 +491,47 @@ namespace HardpointCS2
                     commandInfo.ReplyToCommand($"Distance to first point: {distance:F1}");
                 }
             }
+        }
+
+        [ConsoleCommand("css_selectzone", "Selects a specific zone by name.")]
+        [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandSelectZone(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var zoneName = commandInfo.GetArg(1);
+            var zone = _zoneManager?.Zones.FirstOrDefault(z => z.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase));
+            
+            if (zone != null)
+            {
+                // Clear all existing visualizations
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                // Set and draw the selected zone
+                activeZone = zone;
+                _zoneVisualization?.DrawZone(activeZone);
+                
+                commandInfo.ReplyToCommand($"Selected and drew zone: {zone.Name}");
+                Server.PrintToConsole($"[HardpointCS2] Manually selected zone: {zone.Name}");
+            }
+            else
+            {
+                commandInfo.ReplyToCommand($"Zone '{zoneName}' not found");
+                
+                // List available zones
+                var availableZones = string.Join(", ", _zoneManager?.Zones.Select(z => z.Name) ?? new List<string>());
+                commandInfo.ReplyToCommand($"Available zones: {availableZones}");
+            }
+        }
+
+        [ConsoleCommand("css_clearzone", "Clears the active zone.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandClearZone(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            activeZone = null;
+            _zoneVisualization?.ClearZoneVisualization();
+            commandInfo.ReplyToCommand("Cleared active zone - no zones are now active");
+            Server.PrintToConsole("[HardpointCS2] Cleared active zone");
         }
         #endregion
     }

@@ -34,11 +34,6 @@ namespace HardpointCS2.Services
             }
         }
 
-        public void AddZone(string zoneName)
-        {
-            Zones.Add(new Zone { Name = zoneName, Points = new List<CSVector>() });
-        }
-
         public void AddPointToZone(string zoneName, CSVector position)
         {
             var zone = Zones.Find(z => z.Name == zoneName);
@@ -57,20 +52,43 @@ namespace HardpointCS2.Services
         {
             var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
             
+            Server.PrintToConsole($"[HardpointCS2] LoadZonesForMap called for map: {mapName}");
+            Server.PrintToConsole($"[HardpointCS2] Looking for file: {filePath}");
+            Server.PrintToConsole($"[HardpointCS2] File exists: {File.Exists(filePath)}");
+            
             if (!File.Exists(filePath))
             {
                 Server.PrintToConsole($"[HardpointCS2] No zone file found for map {mapName}");
+                
+                // List all files in the directory to see what's there
+                if (Directory.Exists(_zonesDirectory))
+                {
+                    var files = Directory.GetFiles(_zonesDirectory);
+                    Server.PrintToConsole($"[HardpointCS2] Files in zones directory: {files.Length}");
+                    foreach (var file in files)
+                    {
+                        Server.PrintToConsole($"[HardpointCS2] - {Path.GetFileName(file)}");
+                    }
+                }
+                else
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Zones directory doesn't exist: {_zonesDirectory}");
+                }
                 return;
             }
 
             try
             {
                 var jsonContent = File.ReadAllText(filePath);
+                Server.PrintToConsole($"[HardpointCS2] Read JSON content, length: {jsonContent.Length}");
+                
                 var mapData = JsonSerializer.Deserialize<MapZoneData>(jsonContent);
+                Server.PrintToConsole($"[HardpointCS2] Deserialized map data, zones: {mapData?.Zones?.Count ?? 0}");
                 
                 if (mapData?.Zones != null)
                 {
                     Zones.Clear();
+                    Server.PrintToConsole($"[HardpointCS2] Processing {mapData.Zones.Count} zone definitions");
                     
                     foreach (var zoneDef in mapData.Zones)
                     {
@@ -90,14 +108,20 @@ namespace HardpointCS2.Services
                         }
 
                         Zones.Add(zone);
+                        Server.PrintToConsole($"[HardpointCS2] Added zone '{zone.Name}' with {zone.Points.Count} points to Zones list");
                     }
 
-                    Server.PrintToConsole($"[HardpointCS2] Loaded {Zones.Count} zones for map {mapName}");
+                    Server.PrintToConsole($"[HardpointCS2] Final Zones count: {Zones.Count}");
+                }
+                else
+                {
+                    Server.PrintToConsole($"[HardpointCS2] mapData or mapData.Zones is null");
                 }
             }
             catch (Exception ex)
             {
                 Server.PrintToConsole($"[HardpointCS2] Error loading zones for map {mapName}: {ex.Message}");
+                Server.PrintToConsole($"[HardpointCS2] Stack trace: {ex.StackTrace}");
             }
         }
 

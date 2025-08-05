@@ -15,30 +15,54 @@ namespace HardpointCS2.Services
 
         public void DrawZone(Zone zone)
         {
-            if (zone.Points == null || zone.Points.Count < 3) return;
+            if (zone.Points == null || zone.Points.Count < 3) 
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Cannot draw zone {zone.Name}: insufficient points ({zone.Points?.Count ?? 0})");
+                return;
+            }
 
-            // Clear existing beams for this zone
-            ClearZoneBeams(zone);
+            Server.PrintToConsole($"[ZoneVisualization] Drawing zone {zone.Name} with {zone.Points.Count} points");
 
-            // Create new beams with current color
+            // Safely clear existing beams for this zone
+            try
+            {
+                ClearZoneBeams(zone);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error clearing zone beams: {ex.Message}");
+            }
+
             var beams = new List<CBeam>();
-            CreateGroundOverlay(zone, beams);
-            CreateZoneBorders(zone, beams);
             
-            zoneBeams[zone] = beams;
+            try
+            {
+                CreateGroundOverlay(zone, beams);
+                CreateZoneBorders(zone, beams);
+                
+                zoneBeams[zone] = beams;
+                
+                Server.PrintToConsole($"[ZoneVisualization] Created {beams.Count} beams for zone {zone.Name}");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error creating beams for zone {zone.Name}: {ex.Message}");
+            }
         }
 
         public void UpdateZoneColor(Zone zone)
         {
-            if (!zoneBeams.ContainsKey(zone)) return;
-
-            var color = GetZoneColor(zone.GetZoneState());
-            
-            // Instead of just updating the color, recreate the zone visualization
-            // This ensures the color change is properly applied
+            // Add a small delay to avoid conflicts with entity cleanup
             Server.NextFrame(() =>
             {
-                DrawZone(zone);
+                try
+                {
+                    DrawZone(zone);
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[ZoneVisualization] Error updating zone color: {ex.Message}");
+                }
             });
         }
 
@@ -154,13 +178,24 @@ namespace HardpointCS2.Services
             return beam;
         }
 
-        private void ClearZoneBeams(Zone zone)
+        public void ClearZoneBeams(Zone zone)
         {
             if (zoneBeams.ContainsKey(zone))
             {
                 foreach (var beam in zoneBeams[zone])
                 {
-                    beam?.Remove();
+                    try
+                    {
+                        if (beam?.IsValid == true)
+                        {
+                            beam.Remove();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Entity might already be removed, just log and continue
+                        Server.PrintToConsole($"[ZoneVisualization] Failed to remove beam: {ex.Message}");
+                    }
                 }
                 zoneBeams[zone].Clear();
             }
@@ -168,11 +203,22 @@ namespace HardpointCS2.Services
 
         public void ClearZoneVisualization()
         {
-            foreach (var beamList in zoneBeams.Values)
+            foreach (var kvp in zoneBeams.ToList()) // Use ToList() to avoid modification during enumeration
             {
-                foreach (var beam in beamList)
+                foreach (var beam in kvp.Value)
                 {
-                    beam?.Remove();
+                    try
+                    {
+                        if (beam?.IsValid == true)
+                        {
+                            beam.Remove();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Entity might already be removed, just log and continue
+                        Server.PrintToConsole($"[ZoneVisualization] Failed to remove beam: {ex.Message}");
+                    }
                 }
             }
             zoneBeams.Clear();
