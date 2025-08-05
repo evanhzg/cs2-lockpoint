@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("HardpointCS2")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3d1f8606e108b1053e8940c3d19ccb03b3544b6c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0b3263092d6bb165e651997afa7ed701f9d093b9")]
 [assembly: System.Reflection.AssemblyProductAttribute("HardpointCS2")]
 [assembly: System.Reflection.AssemblyTitleAttribute("HardpointCS2")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

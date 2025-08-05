@@ -381,13 +381,14 @@ namespace HardpointCS2
 
         private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
         {
-            // Stop zone checking during round transition
             // Stop timers during round transition
             _zoneCheckTimer?.Stop();
             _hardpointTimer?.Stop();
-
+            
+            // Clear all respawn timers
             CleanupAllRespawnTimers();
             
+            // Only reset game state if game is active
             if (_gamePhase == GamePhase.Active)
             {
                 // Reset scores and timers for new round
@@ -407,7 +408,7 @@ namespace HardpointCS2
                 _zoneVisualization?.ClearZoneVisualization();
                 activeZone = null;
             }
-    
+            
             AddTimer(3.0f, () =>
             {
                 try
@@ -417,21 +418,25 @@ namespace HardpointCS2
                     {
                         zone.PlayersInZone.Clear();
                     }
-
-                    // Respawn all players regardless of phase
+                    
+                    // Respawn all players with appropriate spawn logic
                     RespawnAllPlayers();
                     
                     if (_gamePhase == GamePhase.Active)
                     {
-                        Server.NextFrame(() =>
+                        // Wait for respawns to complete before starting zones
+                        AddTimer(1.0f, () =>
                         {
-                            DrawRandomZone();
-                            
-                            // Restart timers only if game is active
-                            _zoneCheckTimer?.Start();
-                            _hardpointTimer?.Start();
-                            
-                            Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint round started!{ChatColors.Default}");
+                            Server.NextFrame(() =>
+                            {
+                                DrawRandomZone();
+                                
+                                // Restart timers only if game is active
+                                _zoneCheckTimer?.Start();
+                                _hardpointTimer?.Start();
+                                
+                                Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint round started!{ChatColors.Default}");
+                            });
                         });
                     }
                     else
@@ -728,6 +733,23 @@ namespace HardpointCS2
                         // Force respawn everyone, dead or alive
                         player.Respawn();
                         
+                        // If in warmup phase, teleport to random spawn after respawn
+                        if (_gamePhase == GamePhase.Warmup)
+                        {
+                            AddTimer(0.2f, () =>
+                            {
+                                if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
+                                {
+                                    var randomSpawn = GetRandomSpawnPointAny();
+                                    if (randomSpawn != null)
+                                    {
+                                        player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                                        Server.PrintToConsole($"[HardpointCS2] Teleported {player.PlayerName} to random warmup spawn");
+                                    }
+                                }
+                            });
+                        }
+                        
                         Server.PrintToConsole($"[HardpointCS2] Respawned player: {player.PlayerName}");
                         player.PrintToChat($"{ChatColors.Green}You have been respawned for the new phase!{ChatColors.Default}");
                     }
@@ -738,12 +760,23 @@ namespace HardpointCS2
                         // Fallback: try teleporting to spawn if respawn fails
                         try
                         {
-                            var spawnPoint = GetRandomSpawnPoint(player.TeamNum);
+                            Vector? spawnPoint;
+                            
+                            if (_gamePhase == GamePhase.Warmup)
+                            {
+                                // Use random spawn during warmup
+                                spawnPoint = GetRandomSpawnPointAny();
+                            }
+                            else
+                            {
+                                // Use team spawn during active game
+                                spawnPoint = GetRandomSpawnPoint(player.TeamNum);
+                            }
+                            
                             if (spawnPoint != null && player.PlayerPawn?.Value != null)
                             {
                                 player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
                                 player.PlayerPawn.Value.Health = 100;
-                                // Remove the ArmorValue line - it doesn't exist in the API
                                 Server.PrintToConsole($"[HardpointCS2] Teleported player {player.PlayerName} to spawn as fallback");
                             }
                         }
@@ -784,51 +817,66 @@ namespace HardpointCS2
         {
             var player = @event.Userid;
             
-            // Only handle respawn during active game phase
-            if (_gamePhase != GamePhase.Active || player?.IsValid != true || player.IsBot)
+            if (player?.IsValid != true || player.IsBot)
                 return HookResult.Continue;
 
             try
             {
-                // Record death time
-                _playerDeathTimes[player] = DateTime.Now;
-                
-                // Clear any existing respawn timer for this player
-                if (_respawnTimers.ContainsKey(player))
+                if (_gamePhase == GamePhase.Warmup)
                 {
-                    _respawnTimers[player].Stop();
-                    _respawnTimers[player].Dispose();
-                    _respawnTimers.Remove(player);
+                    // Instant respawn during warmup at a random spawn point
+                    Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died in warmup, respawning instantly");
+                    
+                    AddTimer(0.1f, () => // Very short delay to ensure death is processed
+                    {
+                        if (player?.IsValid == true && !player.PawnIsAlive)
+                        {
+                            RespawnPlayerAtRandomSpawn(player);
+                        }
+                    });
                 }
-
-                Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
-
-                // Create respawn timer with null check
-                var respawnTimer = new System.Timers.Timer(100); // Update every 100ms for smooth countdown
-                respawnTimer.Elapsed += (sender, e) => 
+                else if (_gamePhase == GamePhase.Active)
                 {
-                    if (player?.IsValid == true)
+                    // 5-second respawn timer during active game
+                    _playerDeathTimes[player] = DateTime.Now;
+                    
+                    // Clear any existing respawn timer for this player
+                    if (_respawnTimers.ContainsKey(player))
                     {
-                        UpdateRespawnCountdown(player);
+                        _respawnTimers[player].Stop();
+                        _respawnTimers[player].Dispose();
+                        _respawnTimers.Remove(player);
                     }
-                    else
-                    {
-                        respawnTimer.Stop();
-                        respawnTimer.Dispose();
-                    }
-                };
-                respawnTimer.Start();
-                
-                _respawnTimers[player] = respawnTimer;
 
-                // Schedule the actual respawn with null check
-                AddTimer(RESPAWN_DELAY, () => 
-                {
-                    if (player?.IsValid == true)
+                    Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
+
+                    // Create respawn timer with null check
+                    var respawnTimer = new System.Timers.Timer(100); // Update every 100ms for smooth countdown
+                    respawnTimer.Elapsed += (sender, e) => 
                     {
-                        RespawnPlayer(player);
-                    }
-                });
+                        if (player?.IsValid == true)
+                        {
+                            UpdateRespawnCountdown(player);
+                        }
+                        else
+                        {
+                            respawnTimer.Stop();
+                            respawnTimer.Dispose();
+                        }
+                    };
+                    respawnTimer.Start();
+                    
+                    _respawnTimers[player] = respawnTimer;
+
+                    // Schedule the actual respawn with null check
+                    AddTimer(RESPAWN_DELAY, () => 
+                    {
+                        if (player?.IsValid == true)
+                        {
+                            RespawnPlayer(player);
+                        }
+                    });
+                }
             }
             catch (Exception ex)
             {
@@ -836,6 +884,145 @@ namespace HardpointCS2
             }
 
             return HookResult.Continue;
+        }
+
+        private void RespawnPlayerAtRandomSpawn(CCSPlayerController player)
+        {
+            Server.NextFrame(() =>
+            {
+                try
+                {
+                    if (player?.IsValid != true)
+                        return;
+
+                    // Try to respawn the player first
+                    player.Respawn();
+                    
+                    // Then teleport to a deathmatch spawn point after a small delay
+                    AddTimer(0.2f, () =>
+                    {
+                        if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
+                        {
+                            var randomSpawn = GetDeathmatchSpawn(); // Use deathmatch spawns preferentially
+                            if (randomSpawn != null)
+                            {
+                                player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                                Server.PrintToConsole($"[HardpointCS2] Teleported {player.PlayerName} to deathmatch spawn");
+                            }
+                        }
+                    });
+                    
+                    player.PrintToChat($"{ChatColors.Green}Respawned instantly (warmup mode)!{ChatColors.Default}");
+                    Server.PrintToConsole($"[HardpointCS2] Instantly respawned player: {player.PlayerName}");
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error instantly respawning player {player?.PlayerName}: {ex.Message}");
+                }
+            });
+        }
+
+        private Vector? GetRandomSpawnPointAny()
+        {
+            try
+            {
+                var allSpawns = new List<Vector>();
+                
+                // First priority: Use deathmatch spawns if they exist
+                var dmSpawns = Utilities.FindAllEntitiesByDesignerName<CInfoDeathmatchSpawn>("info_deathmatch_spawn");
+                if (dmSpawns.Any())
+                {
+                    allSpawns.AddRange(dmSpawns
+                        .Where(spawn => spawn?.AbsOrigin != null)
+                        .Select(spawn => spawn.AbsOrigin!));
+                    
+                    Server.PrintToConsole($"[HardpointCS2] Found {dmSpawns.Count()} deathmatch spawn points");
+                }
+                
+                // If no deathmatch spawns, fall back to regular spawns
+                if (!allSpawns.Any())
+                {
+                    // Add CT spawns
+                    var ctSpawns = Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("info_player_counterterrorist");
+                    allSpawns.AddRange(ctSpawns
+                        .Where(spawn => spawn?.AbsOrigin != null)
+                        .Select(spawn => spawn.AbsOrigin!));
+                    
+                    // Add T spawns
+                    var tSpawns = Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("info_player_terrorist");
+                    allSpawns.AddRange(tSpawns
+                        .Where(spawn => spawn?.AbsOrigin != null)
+                        .Select(spawn => spawn.AbsOrigin!));
+                    
+                    Server.PrintToConsole($"[HardpointCS2] No deathmatch spawns found, using {allSpawns.Count} team spawn points");
+                }
+                
+                // Try other spawn types as additional options
+                var armsraceSpawns = Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("info_armsrace_spawn");
+                allSpawns.AddRange(armsraceSpawns
+                    .Where(spawn => spawn?.AbsOrigin != null)
+                    .Select(spawn => spawn.AbsOrigin!));
+
+                // Also add zone center points as potential spawns during warmup
+                if (_zoneManager?.Zones != null)
+                {
+                    foreach (var zone in _zoneManager.Zones)
+                    {
+                        if (zone.Points?.Count > 0)
+                        {
+                            // Calculate zone center
+                            var centerX = zone.Points.Average(p => p.X);
+                            var centerY = zone.Points.Average(p => p.Y);
+                            var centerZ = zone.Points.Average(p => p.Z);
+                            allSpawns.Add(new Vector(centerX, centerY, centerZ + 10)); // +10 to spawn slightly above ground
+                        }
+                    }
+                }
+
+                if (allSpawns.Any())
+                {
+                    var random = new Random();
+                    var selectedSpawn = allSpawns[random.Next(allSpawns.Count)];
+                    Server.PrintToConsole($"[HardpointCS2] Selected random spawn from {allSpawns.Count} available spawns");
+                    return selectedSpawn;
+                }
+                else
+                {
+                    Server.PrintToConsole("[HardpointCS2] No spawn points found");
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error getting random spawn point: {ex.Message}");
+                return null;
+            }
+        }
+
+        private Vector? GetDeathmatchSpawn()
+        {
+            try
+            {
+                // Try to get deathmatch spawns first
+                var dmSpawns = Utilities.FindAllEntitiesByDesignerName<CInfoDeathmatchSpawn>("info_deathmatch_spawn");
+                
+                if (dmSpawns.Any())
+                {
+                    var random = new Random();
+                    var selectedSpawn = dmSpawns.ElementAt(random.Next(dmSpawns.Count()));
+                    Server.PrintToConsole($"[HardpointCS2] Using deathmatch spawn point");
+                    return selectedSpawn.AbsOrigin;
+                }
+                
+                // Fallback to regular random spawn
+                Server.PrintToConsole("[HardpointCS2] No deathmatch spawns found, falling back to regular spawns");
+                return GetRandomSpawnPointAny();
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error getting deathmatch spawn: {ex.Message}");
+                return GetRandomSpawnPointAny();
+            }
         }
 
         private void UpdateRespawnCountdown(CCSPlayerController? player)
@@ -1404,6 +1591,117 @@ namespace HardpointCS2
                 commandInfo.ReplyToCommand($"{ChatColors.Red}Usage: css_readyconfig <team|all>{ChatColors.Default}");
             }
         }
+
+        [ConsoleCommand("css_kill", "Kill yourself or another player (admin).")]
+        [CommandHelper(minArgs: 0, usage: "[player_name]", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        public void OnCommandKill(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var targetName = commandInfo.GetArg(1);
+            
+            // If no target specified, kill yourself (client only)
+            if (string.IsNullOrEmpty(targetName))
+            {
+                if (player?.IsValid != true)
+                {
+                    commandInfo.ReplyToCommand("Cannot kill yourself from server console. Specify a player name.");
+                    return;
+                }
+
+                if (!player.PawnIsAlive)
+                {
+                    commandInfo.ReplyToCommand($"{ChatColors.Red}You are already dead!{ChatColors.Default}");
+                    return;
+                }
+
+                try
+                {
+                    player.PlayerPawn?.Value?.CommitSuicide(false, true);
+                    Server.PrintToChatAll($"{ChatColors.Yellow}{player.PlayerName}{ChatColors.Default} committed suicide");
+                    Server.PrintToConsole($"[HardpointCS2] {player.PlayerName} killed themselves");
+                }
+                catch (Exception ex)
+                {
+                    commandInfo.ReplyToCommand($"{ChatColors.Red}Error killing yourself: {ex.Message}{ChatColors.Default}");
+                    Server.PrintToConsole($"[HardpointCS2] Error in self-kill for {player.PlayerName}: {ex.Message}");
+                }
+                return;
+            }
+
+            // If target specified, admin kill (requires permissions)
+            if (player?.IsValid == true && !AdminManager.PlayerHasPermissions(player, "@css/slay"))
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You don't have permission to kill other players!{ChatColors.Default}");
+                return;
+            }
+
+            // Find the target player
+            var targetPlayer = FindPlayerByName(targetName);
+            
+            if (targetPlayer == null)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Player '{targetName}' not found!{ChatColors.Default}");
+                return;
+            }
+
+            if (!targetPlayer.PawnIsAlive)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}{targetPlayer.PlayerName} is already dead!{ChatColors.Default}");
+                return;
+            }
+
+            try
+            {
+                targetPlayer.PlayerPawn?.Value?.CommitSuicide(false, true);
+                
+                var killerName = player?.IsValid == true ? player.PlayerName : "Server";
+                Server.PrintToChatAll($"{ChatColors.Red}{targetPlayer.PlayerName}{ChatColors.Default} was killed by {ChatColors.Yellow}{killerName}{ChatColors.Default}");
+                Server.PrintToConsole($"[HardpointCS2] {killerName} killed {targetPlayer.PlayerName}");
+                
+                commandInfo.ReplyToCommand($"{ChatColors.Green}Killed {targetPlayer.PlayerName}!{ChatColors.Default}");
+            }
+            catch (Exception ex)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Error killing {targetPlayer.PlayerName}: {ex.Message}{ChatColors.Default}");
+                Server.PrintToConsole($"[HardpointCS2] Error killing {targetPlayer.PlayerName}: {ex.Message}");
+            }
+        }
+
+        private CCSPlayerController? FindPlayerByName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return null;
+
+            var players = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot)
+                .ToList();
+
+            // First try exact match
+            var exactMatch = players.FirstOrDefault(p => 
+                string.Equals(p.PlayerName, name, StringComparison.OrdinalIgnoreCase));
+            
+            if (exactMatch != null)
+                return exactMatch;
+
+            // Then try partial match
+            var partialMatch = players.FirstOrDefault(p => 
+                p.PlayerName.Contains(name, StringComparison.OrdinalIgnoreCase));
+            
+            if (partialMatch != null)
+                return partialMatch;
+
+            // Try by user ID if it's a number
+            if (int.TryParse(name, out int userId))
+            {
+                var userIdMatch = players.FirstOrDefault(p => p.UserId == userId);
+                if (userIdMatch != null)
+                    return userIdMatch;
+            }
+
+            return null;
+        }
+
         #endregion
     }
 }
