@@ -21,6 +21,10 @@ namespace HardpointCS2
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Hardpoint game mode for CS2";
 
+        private readonly Dictionary<CCSPlayerController, DateTime> _playerDeathTimes = new();
+        private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
+        private readonly float RESPAWN_DELAY = 5.0f; // 5 seconds
+
         private ZoneVisualization? _zoneVisualization;
         private ZoneManager? _zoneManager;
         private readonly Dictionary<CCSPlayerController, Zone> _activeZones = new();
@@ -55,6 +59,8 @@ namespace HardpointCS2
 
             RegisterListener<Listeners.OnMapStart>(OnMapStart);
             RegisterEventHandler<EventRoundStart>(OnRoundStart);
+            RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath); // Add this
+            RegisterEventHandler<EventPlayerDisconnect>(OnPlayerDisconnect); // Add this
 
             _zoneCheckTimer = new System.Timers.Timer(50);
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
@@ -134,9 +140,6 @@ namespace HardpointCS2
                     {
                         teamEntity.Score = newScore;
                         Server.PrintToConsole($"[HardpointCS2] Updated {team} score to {newScore}");
-                        
-                        // Force a scoreboard update
-                        Utilities.SetStateChanged(teamEntity, "CCSTeam", "m_iScore");
                         break;
                     }
                 }
@@ -149,12 +152,14 @@ namespace HardpointCS2
 
         private void UpdateHardpointHUD()
         {
+            // Handle warmup phase
             if (_gamePhase == GamePhase.Warmup)
             {
                 UpdateWarmupHUD();
                 return;
             }
 
+            // Check if we're in the waiting period between zones
             if (activeZone == null && _waitingForNewZone)
             {
                 var remainingTime = Math.Max(0, _newZoneTimer - (DateTime.Now - _zoneResetTime).TotalSeconds);
@@ -166,11 +171,16 @@ namespace HardpointCS2
                         player.Connected == PlayerConnectedState.PlayerConnected && 
                         !player.IsBot)
                     {
-                        player.PrintToCenter(waitMessage);
+                        // Only show zone message if player is alive (not waiting for respawn)
+                        if (player.PawnIsAlive && !_playerDeathTimes.ContainsKey(player))
+                        {
+                            player.PrintToCenter(waitMessage);
+                        }
                     }
                 }
                 return;
             }
+
             if (activeZone == null) return;
 
             var zoneState = activeZone.GetZoneState();
@@ -186,14 +196,18 @@ namespace HardpointCS2
                 _ => $"⚪ {activeZone.Name} - Status unknown"
             };
 
-            // Print to center of screen for ALL players (not just those in zone)
+            // Print to center of screen for living players only
             foreach (var player in Utilities.GetPlayers())
             {
                 if (player?.IsValid == true && 
                     player.Connected == PlayerConnectedState.PlayerConnected && 
                     !player.IsBot)
                 {
-                    player.PrintToCenter(statusMessage);
+                    // Only show zone message if player is alive (not waiting for respawn)
+                    if (player.PawnIsAlive && !_playerDeathTimes.ContainsKey(player))
+                    {
+                        player.PrintToCenter(statusMessage);
+                    }
                 }
             }
         }
@@ -249,7 +263,7 @@ namespace HardpointCS2
                     warmupMessage = $"⏳ Waiting for {totalCount - readyCount} players to ready up ({readyCount}/{totalCount})";
             }
 
-            // Send message to ALL players (including spectators)
+            // Send warmup message to ALL players (dead players don't get respawn timer in warmup)
             foreach (var player in Utilities.GetPlayers())
             {
                 if (player?.IsValid == true && 
@@ -291,7 +305,7 @@ namespace HardpointCS2
                 return $"⚪ {zoneName} neutral - CT: {ctProgress:F0}% | T: {tProgress:F0}%";
         }
 
-       private void ResetZoneAndSelectNew()
+        private void ResetZoneAndSelectNew()
         {
             if (activeZone == null) return;
 
@@ -371,6 +385,8 @@ namespace HardpointCS2
             // Stop timers during round transition
             _zoneCheckTimer?.Stop();
             _hardpointTimer?.Stop();
+
+            CleanupAllRespawnTimers();
             
             if (_gamePhase == GamePhase.Active)
             {
@@ -401,6 +417,9 @@ namespace HardpointCS2
                     {
                         zone.PlayersInZone.Clear();
                     }
+
+                    // Respawn all players regardless of phase
+                    RespawnAllPlayers();
                     
                     if (_gamePhase == GamePhase.Active)
                     {
@@ -434,6 +453,42 @@ namespace HardpointCS2
             });
             
             return HookResult.Continue;
+        }
+
+        private HookResult OnPlayerDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
+        {
+            var player = @event.Userid;
+            
+            if (player?.IsValid == true)
+            {
+                // Clean up any respawn timers for disconnecting player
+                CleanupRespawnTimer(player);
+                
+                // Remove from ready list if they were ready
+                _readyPlayers.Remove(player);
+            }
+            
+            return HookResult.Continue;
+        }
+
+        private void CleanupAllRespawnTimers()
+        {
+            try
+            {
+                foreach (var timer in _respawnTimers.Values)
+                {
+                    timer.Stop();
+                    timer.Dispose();
+                }
+                _respawnTimers.Clear();
+                _playerDeathTimes.Clear();
+                
+                Server.PrintToConsole("[HardpointCS2] Cleaned up all respawn timers");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error cleaning up respawn timers: {ex.Message}");
+            }
         }
 
         private void DrawAllZones()
@@ -495,6 +550,9 @@ namespace HardpointCS2
             _zoneCheckTimer?.Dispose();
             _hardpointTimer?.Stop();
             _hardpointTimer?.Dispose();
+
+            CleanupAllRespawnTimers();
+
             _zoneVisualization?.ClearZoneVisualization();
             Logger.LogInformation("HardpointCS2 plugin unloaded");
         }
@@ -636,12 +694,245 @@ namespace HardpointCS2
             UpdateTeamScore(CsTeam.CounterTerrorist, 0);
             UpdateTeamScore(CsTeam.Terrorist, 0);
             
-            // Start the first zone
-            DrawRandomZone();
+            // Respawn all players for the new game phase
+            Server.NextFrame(() =>
+            {
+                RespawnAllPlayers();
+                
+                // Wait a moment for respawns to complete, then start the first zone
+                AddTimer(1.0f, () =>
+                {
+                    DrawRandomZone();
+                    
+                    // Start timers
+                    _zoneCheckTimer?.Start();
+                    _hardpointTimer?.Start();
+                });
+            });
+        }
+
+        private void RespawnAllPlayers()
+        {
+            Server.PrintToConsole("[HardpointCS2] Respawning all players...");
             
-            // Start timers
-            _zoneCheckTimer?.Start();
-            _hardpointTimer?.Start();
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (player?.IsValid == true && 
+                    player.Connected == PlayerConnectedState.PlayerConnected && 
+                    !player.IsBot &&
+                    player.TeamNum != (byte)CsTeam.None &&
+                    player.TeamNum != (byte)CsTeam.Spectator)
+                {
+                    try
+                    {
+                        // Force respawn everyone, dead or alive
+                        player.Respawn();
+                        
+                        Server.PrintToConsole($"[HardpointCS2] Respawned player: {player.PlayerName}");
+                        player.PrintToChat($"{ChatColors.Green}You have been respawned for the new phase!{ChatColors.Default}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Server.PrintToConsole($"[HardpointCS2] Error respawning player {player.PlayerName}: {ex.Message}");
+                        
+                        // Fallback: try teleporting to spawn if respawn fails
+                        try
+                        {
+                            var spawnPoint = GetRandomSpawnPoint(player.TeamNum);
+                            if (spawnPoint != null && player.PlayerPawn?.Value != null)
+                            {
+                                player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                                player.PlayerPawn.Value.Health = 100;
+                                // Remove the ArmorValue line - it doesn't exist in the API
+                                Server.PrintToConsole($"[HardpointCS2] Teleported player {player.PlayerName} to spawn as fallback");
+                            }
+                        }
+                        catch (Exception teleportEx)
+                        {
+                            Server.PrintToConsole($"[HardpointCS2] Fallback teleport failed for {player.PlayerName}: {teleportEx.Message}");
+                        }
+                    }
+                }
+            }
+        }
+
+        private Vector? GetRandomSpawnPoint(byte teamNum)
+        {
+            try
+            {
+                // Get spawn points for the team
+                var spawnEntities = teamNum == (byte)CsTeam.CounterTerrorist 
+                    ? Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("info_player_counterterrorist")
+                    : Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("info_player_terrorist");
+
+                if (spawnEntities.Any())
+                {
+                    var random = new Random();
+                    var spawnPoint = spawnEntities.ElementAt(random.Next(spawnEntities.Count()));
+                    return spawnPoint.AbsOrigin;
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error getting spawn point: {ex.Message}");
+            }
+            
+            return null;
+        }
+
+        private HookResult OnPlayerDeath(EventPlayerDeath @event, GameEventInfo info)
+        {
+            var player = @event.Userid;
+            
+            // Only handle respawn during active game phase
+            if (_gamePhase != GamePhase.Active || player?.IsValid != true || player.IsBot)
+                return HookResult.Continue;
+
+            try
+            {
+                // Record death time
+                _playerDeathTimes[player] = DateTime.Now;
+                
+                // Clear any existing respawn timer for this player
+                if (_respawnTimers.ContainsKey(player))
+                {
+                    _respawnTimers[player].Stop();
+                    _respawnTimers[player].Dispose();
+                    _respawnTimers.Remove(player);
+                }
+
+                Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
+
+                // Create respawn timer with null check
+                var respawnTimer = new System.Timers.Timer(100); // Update every 100ms for smooth countdown
+                respawnTimer.Elapsed += (sender, e) => 
+                {
+                    if (player?.IsValid == true)
+                    {
+                        UpdateRespawnCountdown(player);
+                    }
+                    else
+                    {
+                        respawnTimer.Stop();
+                        respawnTimer.Dispose();
+                    }
+                };
+                respawnTimer.Start();
+                
+                _respawnTimers[player] = respawnTimer;
+
+                // Schedule the actual respawn with null check
+                AddTimer(RESPAWN_DELAY, () => 
+                {
+                    if (player?.IsValid == true)
+                    {
+                        RespawnPlayer(player);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error handling player death: {ex.Message}");
+            }
+
+            return HookResult.Continue;
+        }
+
+        private void UpdateRespawnCountdown(CCSPlayerController? player)
+        {
+            if (player?.IsValid != true)
+                return;
+                
+            Server.NextFrame(() =>
+            {
+                try
+                {
+                    if (player?.IsValid != true || !_playerDeathTimes.ContainsKey(player))
+                        return;
+
+                    // Check if player is already alive (respawned by other means)
+                    if (player.PawnIsAlive)
+                    {
+                        CleanupRespawnTimer(player);
+                        return;
+                    }
+
+                    var timeSinceDeath = (DateTime.Now - _playerDeathTimes[player]).TotalSeconds;
+                    var remainingTime = Math.Max(0, RESPAWN_DELAY - timeSinceDeath);
+
+                    if (remainingTime <= 0)
+                    {
+                        CleanupRespawnTimer(player);
+                        return;
+                    }
+
+                    // Show countdown message with only seconds (no decimals)
+                    var remainingSeconds = (int)Math.Ceiling(remainingTime);
+                    var countdownMessage = $"💀 Respawning in {remainingSeconds}s...";
+                    player.PrintToCenter(countdownMessage);
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error updating respawn countdown: {ex.Message}");
+                }
+            });
+        }
+
+        private void RespawnPlayer(CCSPlayerController? player)
+        {
+            if (player?.IsValid != true)
+                return;
+                
+            Server.NextFrame(() =>
+            {
+                try
+                {
+                    if (player?.IsValid != true || player.PawnIsAlive)
+                    {
+                        CleanupRespawnTimer(player);
+                        return;
+                    }
+
+                    // Only respawn if game is still active
+                    if (_gamePhase != GamePhase.Active)
+                    {
+                        CleanupRespawnTimer(player);
+                        return;
+                    }
+
+                    player.Respawn();
+                    player.PrintToChat($"{ChatColors.Green}You have been respawned!{ChatColors.Default}");
+                    Server.PrintToConsole($"[HardpointCS2] Respawned player: {player.PlayerName}");
+                    
+                    CleanupRespawnTimer(player);
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error respawning player {player?.PlayerName}: {ex.Message}");
+                }
+            });
+        }
+
+        private void CleanupRespawnTimer(CCSPlayerController? player)
+        {
+            if (player?.IsValid != true)
+                return;
+                
+            try
+            {
+                if (_respawnTimers.ContainsKey(player))
+                {
+                    _respawnTimers[player].Stop();
+                    _respawnTimers[player].Dispose();
+                    _respawnTimers.Remove(player);
+                }
+                
+                _playerDeathTimes.Remove(player);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error cleaning up respawn timer: {ex.Message}");
+            }
         }
         
         #region Commands
@@ -1078,11 +1369,17 @@ namespace HardpointCS2
             UpdateTeamScore(CsTeam.CounterTerrorist, 0);
             UpdateTeamScore(CsTeam.Terrorist, 0);
             
-            // Restart HUD timer for warmup messages
-            _hardpointTimer?.Start();
-            
             Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Game stopped by admin! Back to warmup.{ChatColors.Default}");
             Server.PrintToChatAll($"{ChatColors.Yellow}⏳ Type !ready to start the game{ChatColors.Default}");
+            
+            // Respawn all players for warmup phase
+            Server.NextFrame(() =>
+            {
+                RespawnAllPlayers();
+                
+                // Restart HUD timer for warmup messages
+                _hardpointTimer?.Start();
+            });
         }
 
         [ConsoleCommand("css_readyconfig", "Configure ready system (Admin only). Usage: css_readyconfig <team|all>")]
