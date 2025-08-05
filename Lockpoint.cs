@@ -10,6 +10,8 @@ using Lockpoint.Models;
 using Lockpoint.Enums;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 
 namespace Lockpoint
@@ -21,6 +23,9 @@ namespace Lockpoint
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
         
+        private const string LockpointCfgDirectory = "/cfg/";
+        private const string LockpointCfgPath = "/cfg/lockpoint.cfg";
+
         private int _gameStartCountdown = 0;
         private CounterStrikeSharp.API.Modules.Timers.Timer? _countdownTimer = null;
         
@@ -88,26 +93,19 @@ namespace Lockpoint
         {
             Server.PrintToConsole($"[Lockpoint] Map started: {mapName}");
             
-            // Configure server settings after map loads
+            // Execute configuration file after map loads
             AddTimer(1.0f, () =>
             {
-                ConfigureServerSettings();
+                ExecuteLockpointConfiguration(ModuleDirectory);
             });
             
-            AddTimer(2.0f, () =>
-            {
-                ConfigureRoundSettings();
-            });
-            
-            // Load zones after server configuration
+            // Load zones after configuration
             AddTimer(3.0f, () =>
             {
                 try
                 {
-                    // FIX: Don't assign void method to a variable
                     _zoneManager?.LoadZonesForMap(mapName);
                     
-                    // FIX: Get zones from the manager's Zones property
                     var zones = _zoneManager?.Zones;
                     if (zones != null && zones.Count > 0)
                     {
@@ -221,81 +219,154 @@ namespace Lockpoint
             }
         }
 
-        private void ConfigureServerSettings()
+        public static void ExecuteLockpointConfiguration(string moduleDirectory)
         {
             try
             {
-                Server.PrintToConsole("[Lockpoint] Configuring server settings...");
+                var fullCfgPath = moduleDirectory + LockpointCfgPath;
                 
-                // Set freeze time to 1 second
-                Server.ExecuteCommand("mp_freezetime 1");
-                
-                // Disable round start and half time cinematics
-                Server.ExecuteCommand("mp_round_restart_delay 1");
-                Server.ExecuteCommand("mp_halftime_duration 1");
-                Server.ExecuteCommand("mp_match_can_clinch 0");
-                
-                // Disable various cinematics and delays
-                Server.ExecuteCommand("tv_delay 0");
-                Server.ExecuteCommand("mp_buytime 0"); // No buy time since it's respawn-based
-                Server.ExecuteCommand("mp_buy_anywhere 0");
-                Server.ExecuteCommand("mp_startmoney 0"); // No money system
-                
-                // Fast round transitions
-                Server.ExecuteCommand("mp_round_restart_delay 1");
-                Server.ExecuteCommand("mp_halftime_duration 1");
-                
-                // Disable team intro cinematics
-                Server.ExecuteCommand("mp_teammatchstat_txt \"\"");
-                Server.ExecuteCommand("mp_teammatchstat_holdtime 0");
-                
-                // Set appropriate game mode settings
-                Server.ExecuteCommand("game_type 0");
-                Server.ExecuteCommand("game_mode 1");
-                
-                Server.PrintToConsole("[Lockpoint] Server settings configured");
+                if (!File.Exists(fullCfgPath))
+                {
+                    // Create directory if it doesn't exist
+                    Directory.CreateDirectory(moduleDirectory + LockpointCfgDirectory);
+
+                    using (var lockpointCfg = File.Create(fullCfgPath))
+                    {
+                        var lockpointCfgContents = @"
+        // Lockpoint Configuration File
+        // This file configures the server for optimal Lockpoint gameplay
+
+        // === CORE GAME SETTINGS ===
+        // Disable automatic round win conditions (we control rounds manually)
+        mp_ignore_round_win_conditions 1
+
+        // Long round time since we control rounds manually  
+        mp_roundtime 60
+        mp_roundtime_defuse 60
+        mp_roundtime_hostage 60
+
+        // Fast transitions
+        mp_freezetime 1
+        mp_round_restart_delay 1
+        mp_halftime_duration 1
+        mp_match_can_clinch 0
+
+        // === ECONOMY DISABLED ===
+        // No money system in Lockpoint
+        mp_maxmoney 0
+        mp_startmoney 0
+        mp_afterroundmoney 0
+        mp_buytime 0
+        mp_buy_anywhere 0
+        mp_playercashawards 0
+        mp_teamcashawards 0
+
+        // === OBJECTIVES DISABLED ===
+        // No bomb or hostage objectives
+        mp_plant_c4_anywhere 0
+        mp_give_player_c4 0
+
+        // === WEAPON SETTINGS ===
+        // Remove map weapons and default loadouts (we handle weapons via code)
+        mp_weapons_allow_map_placed 0
+        mp_ct_default_primary """"
+        mp_t_default_primary """"
+        mp_ct_default_secondary """"
+        mp_t_default_secondary """"
+
+        // === TEAM SETTINGS ===
+        mp_autoteambalance 0
+        mp_limitteams 0
+        mp_solid_teammates 1
+
+        // === RESPAWN SETTINGS ===
+        // Disable automatic respawning (we handle via code)
+        mp_respawn_on_death_ct 0
+        mp_respawn_on_death_t 0
+
+        // === MISC OPTIMIZATIONS ===
+        // Reduce delays and cinematics
+        tv_delay 0
+        mp_teammatchstat_txt """"
+        mp_teammatchstat_holdtime 0
+        mp_warmup_pausetimer 0
+
+        // Basic game mode
+        game_type 0
+        game_mode 1
+
+        // Communication settings
+        sv_talk_enemy_dead 0
+        sv_talk_enemy_living 0
+        sv_deadtalk 1
+
+        // Disable bots
+        bot_kick
+        bot_quota 0
+
+        // Other useful settings
+        mp_forcecamera 1
+        mp_autokick 0
+        mp_friendlyfire 0
+        spec_replay_enable 0
+        mp_death_drop_gun 1
+        mp_death_drop_defuser 0
+        mp_death_drop_grenade 1
+
+        echo [Lockpoint] Configuration loaded successfully!
+        ";
+
+                        var lockpointCfgBytes = Encoding.UTF8.GetBytes(lockpointCfgContents);
+                        lockpointCfg.Write(lockpointCfgBytes, 0, lockpointCfgBytes.Length);
+                    }
+                    
+                    Server.PrintToConsole("[Lockpoint] Created lockpoint.cfg configuration file");
+                }
+
+                // Execute the configuration file
+                Server.ExecuteCommand("exec cs2-lockpoint/lockpoint.cfg");
+                Server.PrintToConsole("[Lockpoint] Executed lockpoint.cfg");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error configuring server settings: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error creating/executing configuration: {ex.Message}");
+                // Fallback to individual commands if cfg fails
+                ExecuteFallbackConfiguration();
             }
         }
 
-        private void ConfigureRoundSettings()
+        // Fallback method if cfg file approach fails
+        private static void ExecuteFallbackConfiguration()
         {
             try
             {
-                Server.PrintToConsole("[Lockpoint] Configuring round settings...");
+                Server.PrintToConsole("[Lockpoint] Using fallback configuration...");
                 
-                // Disable automatic round ending
+                // Core settings
                 Server.ExecuteCommand("mp_ignore_round_win_conditions 1");
+                Server.ExecuteCommand("mp_roundtime 60");
+                Server.ExecuteCommand("mp_freezetime 1");
+                Server.ExecuteCommand("mp_round_restart_delay 1");
                 
-                // Long round time since we control rounds manually
-                Server.ExecuteCommand("mp_roundtime 60"); // 60 minutes, effectively infinite
-                Server.ExecuteCommand("mp_roundtime_defuse 60");
-                Server.ExecuteCommand("mp_roundtime_hostage 60");
+                // Economy
+                Server.ExecuteCommand("mp_maxmoney 0");
+                Server.ExecuteCommand("mp_startmoney 0");
+                Server.ExecuteCommand("mp_buytime 0");
                 
-                // No bomb or hostage objectives
+                // Objectives
                 Server.ExecuteCommand("mp_plant_c4_anywhere 0");
                 Server.ExecuteCommand("mp_give_player_c4 0");
                 
-                // Disable economy
-                Server.ExecuteCommand("mp_maxmoney 0");
-                Server.ExecuteCommand("mp_startmoney 0");
-                Server.ExecuteCommand("mp_afterroundmoney 0");
+                // Teams
+                Server.ExecuteCommand("mp_autoteambalance 0");
+                Server.ExecuteCommand("mp_respawn_on_death_ct 0");
+                Server.ExecuteCommand("mp_respawn_on_death_t 0");
                 
-                // Remove all weapons and give basic loadout
-                Server.ExecuteCommand("mp_weapons_allow_map_placed 0");
-                Server.ExecuteCommand("mp_ct_default_primary \"\"");
-                Server.ExecuteCommand("mp_t_default_primary \"\"");
-                Server.ExecuteCommand("mp_ct_default_secondary \"\"");
-                Server.ExecuteCommand("mp_t_default_secondary \"\"");
-                
-                Server.PrintToConsole("[Lockpoint] Round settings configured");
+                Server.PrintToConsole("[Lockpoint] Fallback configuration applied");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error configuring round settings: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error in fallback configuration: {ex.Message}");
             }
         }
 
@@ -952,27 +1023,27 @@ namespace Lockpoint
                     {
                         string status = "";
                         
-                        if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress:f0 == 0)
+                        if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress == 0)
                         {
                             status = $"🔵 CT Capturing: {ctProgress:F0}%";
                         }
-                        else if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress:f0 > 0)
+                        else if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress > 0)
                         {
-                            status = $"🔵 CT Capturing: {ctProgress:F0}% (T at {tProgress:f0}%)";
+                            status = $"🔵 CT Capturing: {ctProgress:F0}% (T at {tProgress:F0}%)";
                         }
-                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress:f0 == 0)
+                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress == 0)
                         {
                             status = $"🔴 T Capturing: {tProgress:F0}%";
                         }
-                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress:f0 > 0)
+                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress > 0)
                         {
-                            status = $"🔴 T Capturing: {tProgress:F0}% (CT at {ctProgress:f0}%)";
+                            status = $"🔴 T Capturing: {tProgress:F0}% (CT at {ctProgress:F0}%)";
                         }
                         else if (ctPlayersInZone > 0 && tPlayersInZone > 0)
                         {
-                            status = $"⚡ CONTESTED (CT: {ctProgress:f0}% | T: {tProgress:f0}%)";
+                            status = $"⚡ CONTESTED (CT: {ctProgress:F0}% | T: {tProgress:F0}%)";
                         }
-                        else if (ctPlayersInZone == 0 && tPlayersInZone == 0 && ctProgress > 0 || tProgress > 0)
+                        else if (ctPlayersInZone == 0 && tPlayersInZone == 0 && (ctProgress > 0 || tProgress > 0))
                         {
                             status = $"⚪ Zone clear - CT: {ctProgress:F0}% | T: {tProgress:F0}%";
                         }
@@ -3245,14 +3316,29 @@ namespace Lockpoint
             }
         }
 
+        [ConsoleCommand("css_lockpoint_reload_config", "Reload Lockpoint configuration (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandReloadConfig(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            ExecuteLockpointConfiguration(ModuleDirectory);
+            
+            var message = "Lockpoint configuration reloaded!";
+            if (player?.IsValid == true)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            }
+            else
+            {
+                Server.PrintToConsole($"[Lockpoint] {message}");
+            }
+        }
+
         [ConsoleCommand("css_configlockpoint", "Configure server settings for Lockpoint mode (Admin only).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
         [RequiresPermissions("@css/root")]
         public void OnCommandConfigLockpoint(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            AddTimer(0.1f, () => ConfigureServerSettings());
-            AddTimer(0.5f, () => ConfigureRoundSettings());
-            
+        {   
             var message = "Server configured for Lockpoint mode!";
             if (player?.IsValid == true)
             {
@@ -3271,8 +3357,6 @@ namespace Lockpoint
         {
             AddTimer(0.1f, () => 
             {
-                ConfigureServerSettings();
-                ConfigureRoundSettings();
                 Server.ExecuteCommand("mp_restartgame 1");
             });
             
