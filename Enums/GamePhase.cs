@@ -1,9 +1,10 @@
-namespace HardpointCS2.Enums
+namespace Lockpoint.Enums
 {
     public enum GamePhase
     {
         Warmup,
         Active,
-        Ended
+        Ended,
+        EditMode
     }
 }

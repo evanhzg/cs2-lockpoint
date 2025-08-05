@@ -5,21 +5,21 @@ using CounterStrikeSharp.API.Modules.Admin;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API; 
 using Microsoft.Extensions.Logging;
-using HardpointCS2.Services;
-using HardpointCS2.Models;
-using HardpointCS2.Enums;
+using Lockpoint.Services;
+using Lockpoint.Models;
+using Lockpoint.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 
-namespace HardpointCS2
+namespace Lockpoint
 {
-    public class HardpointCS2 : BasePlugin
+    public class Lockpoint : BasePlugin
     {
-        public override string ModuleName => "HardpointCS2";
+        public override string ModuleName => "Lockpoint";
         public override string ModuleVersion => "0.1.0";
         public override string ModuleAuthor => "evanhh";
-        public override string ModuleDescription => "Hardpoint game mode for CS2";
+        public override string ModuleDescription => "Lockpoint game mode for CS2";
 
         private readonly Dictionary<CCSPlayerController, DateTime> _playerDeathTimes = new();
         private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
@@ -32,6 +32,9 @@ namespace HardpointCS2
         private Zone? activeZone;
 
         private GamePhase _gamePhase = GamePhase.Warmup;
+        private GamePhase _previousGamePhase = GamePhase.Warmup;
+        private bool _editMode = false;
+        private bool _previousCheatsEnabled = false;
         private readonly HashSet<CCSPlayerController> _readyPlayers = new();
         private bool _requireTeamReady = true; // Configurable: true = one per team, false = all players
         private DateTime _lastReadyMessage = DateTime.MinValue;
@@ -41,7 +44,7 @@ namespace HardpointCS2
         private float _tZoneTime = 0f;
         private int _ctScore = 0;
         private int _tScore = 0;
-        private System.Timers.Timer? _hardpointTimer;
+        private System.Timers.Timer? _LockpointTimer;
         private Zone? _previousZone = null;
         private readonly float CAPTURE_TIME = 10f; // 10 seconds to capture
         private readonly float TIMER_INTERVAL = 100f; // 100ms updates
@@ -53,7 +56,7 @@ namespace HardpointCS2
 
         public override void Load(bool hotReload)
         {
-            Logger.LogInformation("HardpointCS2 plugin loaded");
+            Logger.LogInformation("Lockpoint plugin loaded");
             _zoneVisualization = new ZoneVisualization();
             _zoneManager = new ZoneManager(ModuleDirectory);
 
@@ -66,20 +69,20 @@ namespace HardpointCS2
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
             _zoneCheckTimer.Start();
 
-            // Initialize hardpoint timer
-            _hardpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
-            _hardpointTimer.Elapsed += UpdateHardpointTimer;
-            _hardpointTimer.Start();
+            // Initialize Lockpoint timer
+            _LockpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
+            _LockpointTimer.Elapsed += UpdateLockpointTimer;
+            _LockpointTimer.Start();
         }
 
-        private void UpdateHardpointTimer(object? sender, System.Timers.ElapsedEventArgs e)
+        private void UpdateLockpointTimer(object? sender, System.Timers.ElapsedEventArgs e)
         {
             Server.NextFrame(() =>
             {
                 try
                 {
                     // Always update HUD regardless of phase
-                    UpdateHardpointHUD();
+                    UpdateLockpointHUD();
 
                     // Only process zone capture logic during active phase
                     if (_gamePhase != GamePhase.Active || activeZone == null)
@@ -122,7 +125,7 @@ namespace HardpointCS2
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error in UpdateHardpointTimer: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error in UpdateLockpointTimer: {ex.Message}");
                 }
             });
         }
@@ -139,19 +142,25 @@ namespace HardpointCS2
                     if (teamEntity?.TeamNum == (int)team)
                     {
                         teamEntity.Score = newScore;
-                        Server.PrintToConsole($"[HardpointCS2] Updated {team} score to {newScore}");
+                        Server.PrintToConsole($"[Lockpoint] Updated {team} score to {newScore}");
                         break;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error updating team score: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error updating team score: {ex.Message}");
             }
         }
 
-        private void UpdateHardpointHUD()
+        private void UpdateLockpointHUD()
         {
+            // Handle edit mode
+            if (_gamePhase == GamePhase.EditMode)
+            {
+                UpdateEditModeHUD();
+                return;
+            }
             // Handle warmup phase
             if (_gamePhase == GamePhase.Warmup)
             {
@@ -212,6 +221,21 @@ namespace HardpointCS2
             }
         }
 
+        private void UpdateEditModeHUD()
+        {
+            var zoneCount = _zoneManager?.Zones?.Count ?? 0;
+            var editMessage = $"🔧 EDIT MODE - {zoneCount} zones | Use !createzone, !removezone";
+            
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (player?.IsValid == true && 
+                    player.Connected == PlayerConnectedState.PlayerConnected && 
+                    !player.IsBot)
+                {
+                    player.PrintToCenter(editMessage);
+                }
+            }
+        }
         private void UpdateWarmupHUD()
         {
             var activePlayers = Utilities.GetPlayers()
@@ -225,7 +249,7 @@ namespace HardpointCS2
             if (activePlayers.Count < 2)
             {
                 if (activePlayers.Count == 1)
-                    warmupMessage = "⏳ At least 2 players required to play Hardpoint...";
+                    warmupMessage = "⏳ At least 2 players required to play Lockpoint...";
                 else
                     warmupMessage = "⏳ Waiting for players to join...";
             }
@@ -292,7 +316,7 @@ namespace HardpointCS2
             if (notReadyPlayers.Count > 0)
             {
                 var notReadyNames = string.Join(", ", notReadyPlayers.Select(p => p.PlayerName));
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Not ready: {notReadyNames}{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}Not ready: {notReadyNames}{ChatColors.Default}");
                 Server.PrintToChatAll($"{ChatColors.Yellow}Type !ready to start the game{ChatColors.Default}");
             }
         }
@@ -323,8 +347,8 @@ namespace HardpointCS2
             activeZone = null; // Clear active zone immediately
             
             // Announce zone cleared and wait period
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} -{ChatColors.Orange} Zone cleared!{ChatColors.Default} Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - ⏱{ChatColors.Yellow} New zone in 5 seconds...{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} -{ChatColors.Orange} Zone cleared!{ChatColors.Default} Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - ⏱{ChatColors.Yellow} New zone in 5 seconds...{ChatColors.Default}");
     
             // Wait 5 seconds before selecting new zone
             AddTimer(5.0f, () =>
@@ -362,15 +386,15 @@ namespace HardpointCS2
             activeZone = newZone;
             _zoneVisualization?.DrawZone(activeZone);
             
-            Server.PrintToChatAll($"{ChatColors.Green}🎯 New Hardpoint: {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}");
-            Server.PrintToConsole($"[HardpointCS2] New zone selected: {activeZone.Name}");
+            Server.PrintToChatAll($"{ChatColors.Green}🎯 New Lockpoint: {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}");
+            Server.PrintToConsole($"[Lockpoint] New zone selected: {activeZone.Name}");
         }
 
         private void OnMapStart(string mapName)
         {
             Server.NextFrame(() =>
             {
-                Server.PrintToConsole($"[HardpointCS2] Map started: {mapName}");
+                Server.PrintToConsole($"[Lockpoint] Map started: {mapName}");
                 Logger.LogInformation($"Loading zones for map: {mapName}");
                 
                 _zoneManager?.LoadZonesForMap(mapName);
@@ -383,7 +407,7 @@ namespace HardpointCS2
         {
             // Stop timers during round transition
             _zoneCheckTimer?.Stop();
-            _hardpointTimer?.Stop();
+            _LockpointTimer?.Stop();
             
             // Clear all respawn timers
             CleanupAllRespawnTimers();
@@ -433,27 +457,27 @@ namespace HardpointCS2
                                 
                                 // Restart timers only if game is active
                                 _zoneCheckTimer?.Start();
-                                _hardpointTimer?.Start();
+                                _LockpointTimer?.Start();
                                 
-                                Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint round started!{ChatColors.Default}");
+                                Server.PrintToChatAll($"{ChatColors.Green}🎮 Lockpoint round started!{ChatColors.Default}");
                             });
                         });
                     }
                     else
                     {
                         // In warmup, only start the HUD timer for warmup messages
-                        _hardpointTimer?.Start();
+                        _LockpointTimer?.Start();
                         Server.PrintToChatAll($"{ChatColors.Yellow}⏳ Warmup phase - Type !ready to start{ChatColors.Default}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error in OnRoundStart: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error in OnRoundStart: {ex.Message}");
                     if (_gamePhase == GamePhase.Active)
                     {
                         _zoneCheckTimer?.Start();
                     }
-                    _hardpointTimer?.Start();
+                    _LockpointTimer?.Start();
                 }
             });
             
@@ -488,11 +512,11 @@ namespace HardpointCS2
                 _respawnTimers.Clear();
                 _playerDeathTimes.Clear();
                 
-                Server.PrintToConsole("[HardpointCS2] Cleaned up all respawn timers");
+                Server.PrintToConsole("[Lockpoint] Cleaned up all respawn timers");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error cleaning up respawn timers: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error cleaning up respawn timers: {ex.Message}");
             }
         }
 
@@ -511,7 +535,7 @@ namespace HardpointCS2
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error drawing active zone {activeZone.Name}: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error drawing active zone {activeZone.Name}: {ex.Message}");
                 }
             }
             else
@@ -535,15 +559,15 @@ namespace HardpointCS2
                 
                 // Only draw the selected zone
                 _zoneVisualization?.DrawZone(randomZone);
-                Server.PrintToConsole($"[HardpointCS2] Drew random zone: {randomZone.Name}");
-                Server.PrintToChatAll($"{ChatColors.Green}🎯 Active Hardpoint: {ChatColors.Yellow}{randomZone.Name}{ChatColors.Default}");
+                Server.PrintToConsole($"[Lockpoint] Drew random zone: {randomZone.Name}");
+                Server.PrintToChatAll($"{ChatColors.Green}🎯 Active Lockpoint: {ChatColors.Yellow}{randomZone.Name}{ChatColors.Default}");
                 activeZone = randomZone;
                 _ctZoneTime = 0f;
                 _tZoneTime = 0f;
             }
             else
             {
-                Server.PrintToConsole("[HardpointCS2] No zones available to draw");
+                Server.PrintToConsole("[Lockpoint] No zones available to draw");
                 Server.PrintToChatAll($"{ChatColors.Red}⚠ No zones available to draw!{ChatColors.Default}");
                 activeZone = null;
             }
@@ -553,13 +577,13 @@ namespace HardpointCS2
         {
             _zoneCheckTimer?.Stop();
             _zoneCheckTimer?.Dispose();
-            _hardpointTimer?.Stop();
-            _hardpointTimer?.Dispose();
+            _LockpointTimer?.Stop();
+            _LockpointTimer?.Dispose();
 
             CleanupAllRespawnTimers();
 
             _zoneVisualization?.ClearZoneVisualization();
-            Logger.LogInformation("HardpointCS2 plugin unloaded");
+            Logger.LogInformation("Lockpoint plugin unloaded");
         }
 
         private void CheckPlayerZones(object? sender, System.Timers.ElapsedEventArgs e)
@@ -568,6 +592,7 @@ namespace HardpointCS2
             {
                 try
                 {
+                    if (_gamePhase == GamePhase.EditMode) return;
                     // Only check the active zone
                     if (activeZone != null)
                     {
@@ -598,7 +623,7 @@ namespace HardpointCS2
                                     // Check if this player just entered
                                     if (!previousPlayers.Contains(player))
                                     {
-                                        Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} entered zone {activeZone.Name}");
+                                        Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} entered zone {activeZone.Name}");
                                     }
                                 }
                                 else
@@ -606,7 +631,7 @@ namespace HardpointCS2
                                     // Check if this player just left
                                     if (previousPlayers.Contains(player))
                                     {
-                                        Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} left zone {activeZone.Name}");
+                                        Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} left zone {activeZone.Name}");
                                     }
                                 }
                             }
@@ -625,19 +650,19 @@ namespace HardpointCS2
                                 
                                 if (currentState != previousState)
                                 {
-                                    Server.PrintToConsole($"[HardpointCS2] Zone {activeZone.Name} state changed: {previousState} -> {currentState}");
+                                    Server.PrintToConsole($"[Lockpoint] Zone {activeZone.Name} state changed: {previousState} -> {currentState}");
                                 }
                             }
                             catch (Exception ex)
                             {
-                                Server.PrintToConsole($"[HardpointCS2] Error updating zone color: {ex.Message}");
+                                Server.PrintToConsole($"[Lockpoint] Error updating zone color: {ex.Message}");
                             }
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error in CheckPlayerZones: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error in CheckPlayerZones: {ex.Message}");
                 }
             });
         }
@@ -652,7 +677,7 @@ namespace HardpointCS2
 
             if (activePlayers.Count < 2)
             {
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Need at least 2 players to start!{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}Need at least 2 players to start!{ChatColors.Default}");
                 return;
             }
 
@@ -677,7 +702,7 @@ namespace HardpointCS2
 
             if (canStart)
             {
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}All players ready! Starting game in 3 seconds...{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}All players ready! Starting game in 3 seconds...{ChatColors.Default}");
                 AddTimer(3.0f, StartGame);
             }
         }
@@ -687,7 +712,7 @@ namespace HardpointCS2
             _gamePhase = GamePhase.Active;
             _readyPlayers.Clear();
             
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}🎮 GAME STARTED! 🎮{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}🎮 GAME STARTED! 🎮{ChatColors.Default}");
             
             // Reset scores
             _ctScore = 0;
@@ -711,14 +736,14 @@ namespace HardpointCS2
                     
                     // Start timers
                     _zoneCheckTimer?.Start();
-                    _hardpointTimer?.Start();
+                    _LockpointTimer?.Start();
                 });
             });
         }
 
         private void RespawnAllPlayers()
         {
-            Server.PrintToConsole("[HardpointCS2] Respawning all players...");
+            Server.PrintToConsole("[Lockpoint] Respawning all players...");
             
             foreach (var player in Utilities.GetPlayers())
             {
@@ -744,18 +769,18 @@ namespace HardpointCS2
                                     if (randomSpawn != null)
                                     {
                                         player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                        Server.PrintToConsole($"[HardpointCS2] Teleported {player.PlayerName} to random warmup spawn");
+                                        Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to random warmup spawn");
                                     }
                                 }
                             });
                         }
                         
-                        Server.PrintToConsole($"[HardpointCS2] Respawned player: {player.PlayerName}");
+                        Server.PrintToConsole($"[Lockpoint] Respawned player: {player.PlayerName}");
                         player.PrintToChat($"{ChatColors.Green}You have been respawned for the new phase!{ChatColors.Default}");
                     }
                     catch (Exception ex)
                     {
-                        Server.PrintToConsole($"[HardpointCS2] Error respawning player {player.PlayerName}: {ex.Message}");
+                        Server.PrintToConsole($"[Lockpoint] Error respawning player {player.PlayerName}: {ex.Message}");
                         
                         // Fallback: try teleporting to spawn if respawn fails
                         try
@@ -777,12 +802,12 @@ namespace HardpointCS2
                             {
                                 player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
                                 player.PlayerPawn.Value.Health = 100;
-                                Server.PrintToConsole($"[HardpointCS2] Teleported player {player.PlayerName} to spawn as fallback");
+                                Server.PrintToConsole($"[Lockpoint] Teleported player {player.PlayerName} to spawn as fallback");
                             }
                         }
                         catch (Exception teleportEx)
                         {
-                            Server.PrintToConsole($"[HardpointCS2] Fallback teleport failed for {player.PlayerName}: {teleportEx.Message}");
+                            Server.PrintToConsole($"[Lockpoint] Fallback teleport failed for {player.PlayerName}: {teleportEx.Message}");
                         }
                     }
                 }
@@ -807,7 +832,7 @@ namespace HardpointCS2
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error getting spawn point: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error getting spawn point: {ex.Message}");
             }
             
             return null;
@@ -825,7 +850,7 @@ namespace HardpointCS2
                 if (_gamePhase == GamePhase.Warmup)
                 {
                     // Instant respawn during warmup at a random spawn point
-                    Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died in warmup, respawning instantly");
+                    Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} died in warmup, respawning instantly");
                     
                     AddTimer(0.1f, () => // Very short delay to ensure death is processed
                     {
@@ -848,7 +873,7 @@ namespace HardpointCS2
                         _respawnTimers.Remove(player);
                     }
 
-                    Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
+                    Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
 
                     // Create respawn timer with null check
                     var respawnTimer = new System.Timers.Timer(100); // Update every 100ms for smooth countdown
@@ -880,7 +905,7 @@ namespace HardpointCS2
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error handling player death: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error handling player death: {ex.Message}");
             }
 
             return HookResult.Continue;
@@ -907,17 +932,17 @@ namespace HardpointCS2
                             if (randomSpawn != null)
                             {
                                 player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                Server.PrintToConsole($"[HardpointCS2] Teleported {player.PlayerName} to deathmatch spawn");
+                                Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to deathmatch spawn");
                             }
                         }
                     });
                     
                     player.PrintToChat($"{ChatColors.Green}Respawned instantly (warmup mode)!{ChatColors.Default}");
-                    Server.PrintToConsole($"[HardpointCS2] Instantly respawned player: {player.PlayerName}");
+                    Server.PrintToConsole($"[Lockpoint] Instantly respawned player: {player.PlayerName}");
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error instantly respawning player {player?.PlayerName}: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error instantly respawning player {player?.PlayerName}: {ex.Message}");
                 }
             });
         }
@@ -936,7 +961,7 @@ namespace HardpointCS2
                         .Where(spawn => spawn?.AbsOrigin != null)
                         .Select(spawn => spawn.AbsOrigin!));
                     
-                    Server.PrintToConsole($"[HardpointCS2] Found {dmSpawns.Count()} deathmatch spawn points");
+                    Server.PrintToConsole($"[Lockpoint] Found {dmSpawns.Count()} deathmatch spawn points");
                 }
                 
                 // If no deathmatch spawns, fall back to regular spawns
@@ -954,7 +979,7 @@ namespace HardpointCS2
                         .Where(spawn => spawn?.AbsOrigin != null)
                         .Select(spawn => spawn.AbsOrigin!));
                     
-                    Server.PrintToConsole($"[HardpointCS2] No deathmatch spawns found, using {allSpawns.Count} team spawn points");
+                    Server.PrintToConsole($"[Lockpoint] No deathmatch spawns found, using {allSpawns.Count} team spawn points");
                 }
                 
                 // Try other spawn types as additional options
@@ -983,18 +1008,18 @@ namespace HardpointCS2
                 {
                     var random = new Random();
                     var selectedSpawn = allSpawns[random.Next(allSpawns.Count)];
-                    Server.PrintToConsole($"[HardpointCS2] Selected random spawn from {allSpawns.Count} available spawns");
+                    Server.PrintToConsole($"[Lockpoint] Selected random spawn from {allSpawns.Count} available spawns");
                     return selectedSpawn;
                 }
                 else
                 {
-                    Server.PrintToConsole("[HardpointCS2] No spawn points found");
+                    Server.PrintToConsole("[Lockpoint] No spawn points found");
                     return null;
                 }
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error getting random spawn point: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error getting random spawn point: {ex.Message}");
                 return null;
             }
         }
@@ -1010,17 +1035,17 @@ namespace HardpointCS2
                 {
                     var random = new Random();
                     var selectedSpawn = dmSpawns.ElementAt(random.Next(dmSpawns.Count()));
-                    Server.PrintToConsole($"[HardpointCS2] Using deathmatch spawn point");
+                    Server.PrintToConsole($"[Lockpoint] Using deathmatch spawn point");
                     return selectedSpawn.AbsOrigin;
                 }
                 
                 // Fallback to regular random spawn
-                Server.PrintToConsole("[HardpointCS2] No deathmatch spawns found, falling back to regular spawns");
+                Server.PrintToConsole("[Lockpoint] No deathmatch spawns found, falling back to regular spawns");
                 return GetRandomSpawnPointAny();
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error getting deathmatch spawn: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error getting deathmatch spawn: {ex.Message}");
                 return GetRandomSpawnPointAny();
             }
         }
@@ -1060,7 +1085,7 @@ namespace HardpointCS2
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error updating respawn countdown: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error updating respawn countdown: {ex.Message}");
                 }
             });
         }
@@ -1089,13 +1114,13 @@ namespace HardpointCS2
 
                     player.Respawn();
                     player.PrintToChat($"{ChatColors.Green}You have been respawned!{ChatColors.Default}");
-                    Server.PrintToConsole($"[HardpointCS2] Respawned player: {player.PlayerName}");
+                    Server.PrintToConsole($"[Lockpoint] Respawned player: {player.PlayerName}");
                     
                     CleanupRespawnTimer(player);
                 }
                 catch (Exception ex)
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Error respawning player {player?.PlayerName}: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error respawning player {player?.PlayerName}: {ex.Message}");
                 }
             });
         }
@@ -1118,7 +1143,7 @@ namespace HardpointCS2
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error cleaning up respawn timer: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error cleaning up respawn timer: {ex.Message}");
             }
         }
         
@@ -1129,6 +1154,11 @@ namespace HardpointCS2
         [RequiresPermissions("@css/root")]
         public void OnCommandSaveZones(CCSPlayerController? player, CommandInfo commandInfo)
         {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
+                return;
+            }
             var mapName = Server.MapName;
             _zoneManager?.SaveZonesForMap(mapName, _zoneManager.Zones);
             commandInfo.ReplyToCommand($"Saved {_zoneManager?.Zones.Count} zones for map {mapName}");
@@ -1152,11 +1182,17 @@ namespace HardpointCS2
             commandInfo.ReplyToCommand($"Reloaded {_zoneManager?.Zones.Count} zones for map {mapName}");
         }
 
-        [ConsoleCommand("css_addzone", "Creates a new hardpoint zone.")]
+        [ConsoleCommand("css_addzone", "Creates a new Lockpoint zone.")]
         [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandAddZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
+                return;
+            }
+
             if (player == null || !player.IsValid)
             {
                 commandInfo.ReplyToCommand("Command must be used by a player.");
@@ -1201,6 +1237,11 @@ namespace HardpointCS2
         [RequiresPermissions("@css/root")]
         public void OnCommandAddPoint(CCSPlayerController? player, CommandInfo commandInfo)
         {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
+                return;
+            }
             if (player == null || !player.IsValid)
             {
                 commandInfo.ReplyToCommand("Command must be used by a player.");
@@ -1248,6 +1289,11 @@ namespace HardpointCS2
         [RequiresPermissions("@css/root")]
         public void OnCommandEndZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
+                return;
+            }
             if (player == null || !player.IsValid)
             {
                 commandInfo.ReplyToCommand("Command must be used by a player.");
@@ -1273,18 +1319,18 @@ namespace HardpointCS2
             var centerZ = zone.Points.Sum(p => p.Z) / zone.Points.Count;
             zone.Center = new CSVector(centerX, centerY, centerZ);
 
-            Server.PrintToConsole($"[HardpointCS2] Adding zone '{zone.Name}' with {zone.Points.Count} points");
+            Server.PrintToConsole($"[Lockpoint] Adding zone '{zone.Name}' with {zone.Points.Count} points");
             
             _zoneManager?.AddZone(zone);
             _zoneVisualization?.DrawZone(zone);
 
             // Debug: Check zone count before saving
             var totalZones = _zoneManager?.Zones.Count ?? 0;
-            Server.PrintToConsole($"[HardpointCS2] Total zones in manager: {totalZones}");
+            Server.PrintToConsole($"[Lockpoint] Total zones in manager: {totalZones}");
 
             // Save immediately
             var mapName = Server.MapName;
-            Server.PrintToConsole($"[HardpointCS2] Calling SaveZonesForMap for map: {mapName}");
+            Server.PrintToConsole($"[Lockpoint] Calling SaveZonesForMap for map: {mapName}");
             
             if (_zoneManager != null)
             {
@@ -1295,6 +1341,137 @@ namespace HardpointCS2
 
             commandInfo.ReplyToCommand($"Zone '{zone.Name}' completed and saved! Total zones: {_zoneManager?.Zones.Count}");
             Logger.LogInformation($"Zone '{zone.Name}' saved for map {mapName}");
+        }
+
+        [ConsoleCommand("css_removezone", "Remove a zone (Admin only, Edit mode required).")]
+        [CommandHelper(minArgs: 0, usage: "[zone_name]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandRemoveZone(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to remove zones! Use !edit{ChatColors.Default}");
+                return;
+            }
+
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
+            {
+                commandInfo.ReplyToCommand("Command must be used by a valid player.");
+                return;
+            }
+
+            var zoneName = commandInfo.GetArg(1);
+            Zone? zoneToRemove = null;
+
+            if (string.IsNullOrWhiteSpace(zoneName))
+            {
+                // No zone name specified, find the closest zone
+                zoneToRemove = FindClosestZone(player);
+                
+                if (zoneToRemove == null)
+                {
+                    commandInfo.ReplyToCommand($"{ChatColors.Red}No zones found nearby.{ChatColors.Default}");
+                    return;
+                }
+            }
+            else
+            {
+                // Zone name specified, find by name
+                zoneToRemove = _zoneManager?.Zones?.FirstOrDefault(z => 
+                    string.Equals(z.Name, zoneName, StringComparison.OrdinalIgnoreCase));
+                
+                if (zoneToRemove == null)
+                {
+                    commandInfo.ReplyToCommand($"{ChatColors.Red}Zone '{zoneName}' not found.{ChatColors.Default}");
+                    return;
+                }
+            }
+
+            try
+            {
+                // Remove from zone manager
+                var mapName = Server.MapName;
+
+                if (_zoneManager?.Zones != null)
+                {
+                    _zoneManager.Zones.Remove(zoneToRemove);
+                    _zoneManager.SaveZonesForMap(mapName, _zoneManager.Zones); // Save the updated zone list
+                }
+                
+
+                // Clear active zone if it was the one being removed
+                if (activeZone == zoneToRemove)
+                {
+                    activeZone = null;
+                }
+
+                // Update visualization in edit mode
+                Server.NextFrame(() =>
+                {
+                    DrawAllZonesForEdit();
+                });
+
+                commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zoneToRemove.Name}' has been removed.{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Yellow}Zone '{zoneToRemove.Name}' was removed by {player.PlayerName}{ChatColors.Default}");
+                Server.PrintToConsole($"[Lockpoint] Zone '{zoneToRemove.Name}' removed by {player.PlayerName}");
+            }
+            catch (Exception ex)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Error removing zone: {ex.Message}{ChatColors.Default}");
+                Server.PrintToConsole($"[Lockpoint] Error removing zone '{zoneToRemove.Name}': {ex.Message}");
+            }
+        }
+
+        private Zone? FindClosestZone(CCSPlayerController player)
+        {
+            if (player?.PlayerPawn?.Value?.AbsOrigin == null || _zoneManager?.Zones == null)
+                return null;
+
+            var playerPos = new CSVector(
+                player.PlayerPawn.Value.AbsOrigin.X,
+                player.PlayerPawn.Value.AbsOrigin.Y,
+                player.PlayerPawn.Value.AbsOrigin.Z
+            );
+
+            Zone? closestZone = null;
+            float closestDistance = float.MaxValue;
+
+            foreach (var zone in _zoneManager.Zones)
+            {
+                if (zone.Points == null || zone.Points.Count == 0)
+                    continue;
+
+                // Calculate distance to zone center
+                var centerX = zone.Points.Average(p => p.X);
+                var centerY = zone.Points.Average(p => p.Y);
+                var centerZ = zone.Points.Average(p => p.Z);
+                
+                var zoneCenter = new CSVector(centerX, centerY, centerZ);
+                var distance = CalculateDistance(playerPos, zoneCenter);
+
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestZone = zone;
+                }
+            }
+
+            // Only return if the closest zone is within reasonable distance (e.g., 500 units)
+            if (closestDistance <= 500.0f)
+            {
+                return closestZone;
+            }
+
+            return null;
+        }
+
+        private float CalculateDistance(CSVector pos1, CSVector pos2)
+        {
+            var dx = pos1.X - pos2.X;
+            var dy = pos1.Y - pos2.Y;
+            var dz = pos1.Z - pos2.Z;
+            
+            return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
         [ConsoleCommand("css_listzones", "Lists all zones.")]
@@ -1419,7 +1596,7 @@ namespace HardpointCS2
                 _zoneVisualization?.DrawZone(activeZone);
                 
                 commandInfo.ReplyToCommand($"Selected and drew zone: {zone.Name}");
-                Server.PrintToConsole($"[HardpointCS2] Manually selected zone: {zone.Name}");
+                Server.PrintToConsole($"[Lockpoint] Manually selected zone: {zone.Name}");
             }
             else
             {
@@ -1439,13 +1616,13 @@ namespace HardpointCS2
             activeZone = null;
             _zoneVisualization?.ClearZoneVisualization();
             commandInfo.ReplyToCommand("Cleared active zone - no zones are now active");
-            Server.PrintToConsole("[HardpointCS2] Cleared active zone");
+            Server.PrintToConsole("[Lockpoint] Cleared active zone");
         }
 
-        [ConsoleCommand("css_hardpointstatus", "Shows current hardpoint status.")]
+        [ConsoleCommand("css_Lockpointstatus", "Shows current Lockpoint status.")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandHardpointStatus(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandLockpointStatus(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (activeZone == null)
             {
@@ -1482,7 +1659,7 @@ namespace HardpointCS2
             }
 
             _readyPlayers.Add(player);
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.LightBlue}{player.PlayerName}{ChatColors.Default} is ready!");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.LightBlue}{player.PlayerName}{ChatColors.Default} is ready!");
             
             CheckReadyStatus();
         }
@@ -1502,7 +1679,7 @@ namespace HardpointCS2
 
             if (_readyPlayers.Remove(player))
             {
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}{player.PlayerName}{ChatColors.Default} is no longer ready!");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}{player.PlayerName}{ChatColors.Default} is no longer ready!");
                 commandInfo.ReplyToCommand($"{ChatColors.Yellow}You are no longer ready.{ChatColors.Default}");
             }
             else
@@ -1522,7 +1699,7 @@ namespace HardpointCS2
                 return;
             }
 
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}Admin forced game start!{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}Admin forced game start!{ChatColors.Default}");
             StartGame();
         }
 
@@ -1542,7 +1719,7 @@ namespace HardpointCS2
             
             // Stop timers and clear zones
             _zoneCheckTimer?.Stop();
-            _hardpointTimer?.Stop();
+            _LockpointTimer?.Stop();
             _zoneVisualization?.ClearZoneVisualization();
             activeZone = null;
             
@@ -1556,7 +1733,7 @@ namespace HardpointCS2
             UpdateTeamScore(CsTeam.CounterTerrorist, 0);
             UpdateTeamScore(CsTeam.Terrorist, 0);
             
-            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Game stopped by admin! Back to warmup.{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}Game stopped by admin! Back to warmup.{ChatColors.Default}");
             Server.PrintToChatAll($"{ChatColors.Yellow}⏳ Type !ready to start the game{ChatColors.Default}");
             
             // Respawn all players for warmup phase
@@ -1565,7 +1742,7 @@ namespace HardpointCS2
                 RespawnAllPlayers();
                 
                 // Restart HUD timer for warmup messages
-                _hardpointTimer?.Start();
+                _LockpointTimer?.Start();
             });
         }
 
@@ -1579,12 +1756,12 @@ namespace HardpointCS2
             if (mode == "team")
             {
                 _requireTeamReady = true;
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}One player per team{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}One player per team{ChatColors.Default}");
             }
             else if (mode == "all")
             {
                 _requireTeamReady = false;
-                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}All players{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}All players{ChatColors.Default}");
             }
             else
             {
@@ -1617,12 +1794,12 @@ namespace HardpointCS2
                 {
                     player.PlayerPawn?.Value?.CommitSuicide(false, true);
                     Server.PrintToChatAll($"{ChatColors.Yellow}{player.PlayerName}{ChatColors.Default} committed suicide");
-                    Server.PrintToConsole($"[HardpointCS2] {player.PlayerName} killed themselves");
+                    Server.PrintToConsole($"[Lockpoint] {player.PlayerName} killed themselves");
                 }
                 catch (Exception ex)
                 {
                     commandInfo.ReplyToCommand($"{ChatColors.Red}Error killing yourself: {ex.Message}{ChatColors.Default}");
-                    Server.PrintToConsole($"[HardpointCS2] Error in self-kill for {player.PlayerName}: {ex.Message}");
+                    Server.PrintToConsole($"[Lockpoint] Error in self-kill for {player.PlayerName}: {ex.Message}");
                 }
                 return;
             }
@@ -1655,14 +1832,14 @@ namespace HardpointCS2
                 
                 var killerName = player?.IsValid == true ? player.PlayerName : "Server";
                 Server.PrintToChatAll($"{ChatColors.Red}{targetPlayer.PlayerName}{ChatColors.Default} was killed by {ChatColors.Yellow}{killerName}{ChatColors.Default}");
-                Server.PrintToConsole($"[HardpointCS2] {killerName} killed {targetPlayer.PlayerName}");
+                Server.PrintToConsole($"[Lockpoint] {killerName} killed {targetPlayer.PlayerName}");
                 
                 commandInfo.ReplyToCommand($"{ChatColors.Green}Killed {targetPlayer.PlayerName}!{ChatColors.Default}");
             }
             catch (Exception ex)
             {
                 commandInfo.ReplyToCommand($"{ChatColors.Red}Error killing {targetPlayer.PlayerName}: {ex.Message}{ChatColors.Default}");
-                Server.PrintToConsole($"[HardpointCS2] Error killing {targetPlayer.PlayerName}: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error killing {targetPlayer.PlayerName}: {ex.Message}");
             }
         }
 
@@ -1700,6 +1877,179 @@ namespace HardpointCS2
             }
 
             return null;
+        }
+
+        [ConsoleCommand("css_edit", "Enter/exit edit mode (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandEdit(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (_editMode)
+            {
+                // Exit edit mode
+                ExitEditMode(player);
+            }
+            else
+            {
+                // Enter edit mode
+                EnterEditMode(player);
+            }
+        }
+
+        private void EnterEditMode(CCSPlayerController? player)
+        {
+            try
+            {
+                // Store previous state
+                _previousGamePhase = _gamePhase;
+                _editMode = true;
+                _gamePhase = GamePhase.EditMode;
+                
+                // Stop all game timers
+                _zoneCheckTimer?.Stop();
+                _LockpointTimer?.Stop();
+                
+                // Clear all respawn timers
+                CleanupAllRespawnTimers();
+                
+                // Enable cheats
+                Server.ExecuteCommand("sv_cheats 1");
+                _previousCheatsEnabled = false; // Assume cheats were off before
+                
+                var editorName = player?.IsValid == true ? player.PlayerName : "Server";
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}🔧 EDIT MODE ACTIVATED by {editorName}!{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.LightBlue}Use noclip to fly around and create/edit zones{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Red}Game is paused during edit mode{ChatColors.Default}");
+                
+                // Respawn all players
+                Server.NextFrame(() =>
+                {
+                    RespawnAllPlayersForEdit();
+                    
+                    // Draw all zones for visibility
+                    AddTimer(1.0f, () =>
+                    {
+                        DrawAllZonesForEdit();
+                        _LockpointTimer?.Start(); // Start timer for HUD updates only
+                    });
+                });
+                
+                Server.PrintToConsole($"[Lockpoint] Edit mode activated by {editorName}");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error entering edit mode: {ex.Message}");
+            }
+        }
+
+        private void ExitEditMode(CCSPlayerController? player)
+        {
+            try
+            {
+                _editMode = false;
+                _gamePhase = _previousGamePhase;
+                
+                // Disable cheats (restore previous state)
+                if (!_previousCheatsEnabled)
+                {
+                    Server.ExecuteCommand("sv_cheats 0");
+                }
+                
+                var editorName = player?.IsValid == true ? player.PlayerName : "Server";
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}🔧 EDIT MODE DEACTIVATED by {editorName}!{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Green}Game resumed{ChatColors.Default}");
+                
+                // Clear all zone visualizations
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                // Respawn all players back to normal mode
+                Server.NextFrame(() =>
+                {
+                    RespawnAllPlayers();
+                    
+                    // Restart game timers based on previous phase
+                    AddTimer(1.0f, () =>
+                    {
+                        if (_gamePhase == GamePhase.Active)
+                        {
+                            DrawRandomZone();
+                            _zoneCheckTimer?.Start();
+                        }
+                        _LockpointTimer?.Start();
+                    });
+                });
+                
+                Server.PrintToConsole($"[Lockpoint] Edit mode deactivated by {editorName}");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error exiting edit mode: {ex.Message}");
+            }
+        }
+
+        private void RespawnAllPlayersForEdit()
+        {
+            Server.PrintToConsole("[Lockpoint] Respawning all players for edit mode...");
+            
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (player?.IsValid == true && 
+                    player.Connected == PlayerConnectedState.PlayerConnected && 
+                    !player.IsBot &&
+                    player.TeamNum != (byte)CsTeam.None &&
+                    player.TeamNum != (byte)CsTeam.Spectator)
+                {
+                    try
+                    {
+                        // Force respawn everyone
+                        player.Respawn();
+                        
+                        // Give noclip after respawn
+                        AddTimer(0.3f, () =>
+                        {
+                            if (player?.IsValid == true && player.PawnIsAlive)
+                            {
+                                Server.ExecuteCommand($"noclip {player.UserId}");
+                                player.PrintToChat($"{ChatColors.Green}Edit mode: Use noclip to fly around!{ChatColors.Default}");
+                            }
+                        });
+                        
+                        Server.PrintToConsole($"[Lockpoint] Respawned player for edit: {player.PlayerName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Server.PrintToConsole($"[Lockpoint] Error respawning player for edit {player.PlayerName}: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private void DrawAllZonesForEdit()
+        {
+            if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+            {
+                Server.PrintToChatAll($"{ChatColors.Yellow}No zones to display{ChatColors.Default}");
+                return;
+            }
+
+            try
+            {
+                // Clear existing visualizations first
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                // Draw all zones
+                foreach (var zone in _zoneManager.Zones)
+                {
+                    _zoneVisualization?.DrawZone(zone);
+                }
+                
+                Server.PrintToChatAll($"{ChatColors.Green}Displaying all {_zoneManager.Zones.Count} zones for editing{ChatColors.Default}");
+                Server.PrintToConsole($"[Lockpoint] Drew all {_zoneManager.Zones.Count} zones for edit mode");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error drawing zones for edit mode: {ex.Message}");
+            }
         }
 
         #endregion

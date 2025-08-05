@@ -1,0 +1,13 @@
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/Lockpoint.deps.json
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/Lockpoint.dll
+/home/evan/CS2/HardpointCS2Plugin/bin/Debug/net8.0/Lockpoint.pdb
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.csproj.AssemblyReference.cache
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.GeneratedMSBuildEditorConfig.editorconfig
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.AssemblyInfoInputs.cache
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.AssemblyInfo.cs
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.csproj.CoreCompileInputs.cache
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.dll
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/refint/Lockpoint.dll
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.pdb
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/ref/Lockpoint.dll
+/home/evan/CS2/HardpointCS2Plugin/obj/Debug/net8.0/Lockpoint.sourcelink.json

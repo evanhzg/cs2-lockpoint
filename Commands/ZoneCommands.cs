@@ -4,13 +4,13 @@ using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Admin;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Utils;
-using HardpointCS2.Models;
-using HardpointCS2.Services;
+using Lockpoint.Models;
+using Lockpoint.Services;
 using System.Collections.Generic;
 using System.Linq;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 
-namespace HardpointCS2.Commands
+namespace Lockpoint.Commands
 {
     public class ZoneCommands
     {
@@ -23,7 +23,7 @@ namespace HardpointCS2.Commands
             _zoneVisualization = zoneVisualization;
         }
 
-        [ConsoleCommand("css_addzone", "Creates a new hardpoint zone.")]
+        [ConsoleCommand("css_addzone", "Creates a new Lockpoint zone.")]
         [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandAddZone(CCSPlayerController? player, CommandInfo commandInfo)

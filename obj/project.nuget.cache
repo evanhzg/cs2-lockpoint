@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "UVNSf8cUFPM=",
+  "dgSpecHash": "WQhhBtPK5BY=",
   "success": true,
-  "projectFilePath": "/home/evan/CS2/HardpointCS2Plugin/HardpointCS2.csproj",
+  "projectFilePath": "/home/evan/CS2/HardpointCS2Plugin/Lockpoint.csproj",
   "expectedPackageFiles": [
     "/home/evan/.nuget/packages/counterstrikesharp.api/1.0.196/counterstrikesharp.api.1.0.196.nupkg.sha512",
     "/home/evan/.nuget/packages/mcmaster.netcore.plugins/1.4.0/mcmaster.netcore.plugins.1.4.0.nupkg.sha512",

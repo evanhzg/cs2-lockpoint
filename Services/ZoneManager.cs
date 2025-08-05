@@ -3,11 +3,11 @@ using System.IO;
 using System.Text.Json;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Modules.Utils;
-using HardpointCS2.Models;
+using Lockpoint.Models;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 using System.Reflection;
 
-namespace HardpointCS2.Services
+namespace Lockpoint.Services
 {
     public class ZoneManager 
     {
@@ -24,13 +24,13 @@ namespace HardpointCS2.Services
         {
             _zonesDirectory = Path.Join(moduleDirectory, "zones");
             
-            Server.PrintToConsole($"[HardpointCS2] Module directory: {moduleDirectory}");
-            Server.PrintToConsole($"[HardpointCS2] Zones directory: {_zonesDirectory}");
+            Server.PrintToConsole($"[Lockpoint] Module directory: {moduleDirectory}");
+            Server.PrintToConsole($"[Lockpoint] Zones directory: {_zonesDirectory}");
             
             if (!Directory.Exists(_zonesDirectory))
             {
                 Directory.CreateDirectory(_zonesDirectory);
-                Server.PrintToConsole($"[HardpointCS2] Created zones directory");
+                Server.PrintToConsole($"[Lockpoint] Created zones directory");
             }
         }
 
@@ -52,27 +52,27 @@ namespace HardpointCS2.Services
         {
             var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
             
-            Server.PrintToConsole($"[HardpointCS2] LoadZonesForMap called for map: {mapName}");
-            Server.PrintToConsole($"[HardpointCS2] Looking for file: {filePath}");
-            Server.PrintToConsole($"[HardpointCS2] File exists: {File.Exists(filePath)}");
+            Server.PrintToConsole($"[Lockpoint] LoadZonesForMap called for map: {mapName}");
+            Server.PrintToConsole($"[Lockpoint] Looking for file: {filePath}");
+            Server.PrintToConsole($"[Lockpoint] File exists: {File.Exists(filePath)}");
             
             if (!File.Exists(filePath))
             {
-                Server.PrintToConsole($"[HardpointCS2] No zone file found for map {mapName}");
+                Server.PrintToConsole($"[Lockpoint] No zone file found for map {mapName}");
                 
                 // List all files in the directory to see what's there
                 if (Directory.Exists(_zonesDirectory))
                 {
                     var files = Directory.GetFiles(_zonesDirectory);
-                    Server.PrintToConsole($"[HardpointCS2] Files in zones directory: {files.Length}");
+                    Server.PrintToConsole($"[Lockpoint] Files in zones directory: {files.Length}");
                     foreach (var file in files)
                     {
-                        Server.PrintToConsole($"[HardpointCS2] - {Path.GetFileName(file)}");
+                        Server.PrintToConsole($"[Lockpoint] - {Path.GetFileName(file)}");
                     }
                 }
                 else
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Zones directory doesn't exist: {_zonesDirectory}");
+                    Server.PrintToConsole($"[Lockpoint] Zones directory doesn't exist: {_zonesDirectory}");
                 }
                 return;
             }
@@ -80,15 +80,15 @@ namespace HardpointCS2.Services
             try
             {
                 var jsonContent = File.ReadAllText(filePath);
-                Server.PrintToConsole($"[HardpointCS2] Read JSON content, length: {jsonContent.Length}");
+                Server.PrintToConsole($"[Lockpoint] Read JSON content, length: {jsonContent.Length}");
                 
                 var mapData = JsonSerializer.Deserialize<MapZoneData>(jsonContent);
-                Server.PrintToConsole($"[HardpointCS2] Deserialized map data, zones: {mapData?.Zones?.Count ?? 0}");
+                Server.PrintToConsole($"[Lockpoint] Deserialized map data, zones: {mapData?.Zones?.Count ?? 0}");
                 
                 if (mapData?.Zones != null)
                 {
                     Zones.Clear();
-                    Server.PrintToConsole($"[HardpointCS2] Processing {mapData.Zones.Count} zone definitions");
+                    Server.PrintToConsole($"[Lockpoint] Processing {mapData.Zones.Count} zone definitions");
                     
                     foreach (var zoneDef in mapData.Zones)
                     {
@@ -108,20 +108,20 @@ namespace HardpointCS2.Services
                         }
 
                         Zones.Add(zone);
-                        Server.PrintToConsole($"[HardpointCS2] Added zone '{zone.Name}' with {zone.Points.Count} points to Zones list");
+                        Server.PrintToConsole($"[Lockpoint] Added zone '{zone.Name}' with {zone.Points.Count} points to Zones list");
                     }
 
-                    Server.PrintToConsole($"[HardpointCS2] Final Zones count: {Zones.Count}");
+                    Server.PrintToConsole($"[Lockpoint] Final Zones count: {Zones.Count}");
                 }
                 else
                 {
-                    Server.PrintToConsole($"[HardpointCS2] mapData or mapData.Zones is null");
+                    Server.PrintToConsole($"[Lockpoint] mapData or mapData.Zones is null");
                 }
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] Error loading zones for map {mapName}: {ex.Message}");
-                Server.PrintToConsole($"[HardpointCS2] Stack trace: {ex.StackTrace}");
+                Server.PrintToConsole($"[Lockpoint] Error loading zones for map {mapName}: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Stack trace: {ex.StackTrace}");
             }
         }
 
@@ -129,25 +129,25 @@ namespace HardpointCS2.Services
         {
             var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
 
-            Server.PrintToConsole($"[HardpointCS2] === SAVE DEBUG START ===");
-            Server.PrintToConsole($"[HardpointCS2] SaveZonesForMap called");
-            Server.PrintToConsole($"[HardpointCS2] Map: {mapName}");
-            Server.PrintToConsole($"[HardpointCS2] Zones to save: {zonesToSave.Count}");
-            Server.PrintToConsole($"[HardpointCS2] Zones directory: {_zonesDirectory}");
-            Server.PrintToConsole($"[HardpointCS2] Full file path: {filePath}");
-            Server.PrintToConsole($"[HardpointCS2] Directory exists: {Directory.Exists(_zonesDirectory)}");
+            Server.PrintToConsole($"[Lockpoint] === SAVE DEBUG START ===");
+            Server.PrintToConsole($"[Lockpoint] SaveZonesForMap called");
+            Server.PrintToConsole($"[Lockpoint] Map: {mapName}");
+            Server.PrintToConsole($"[Lockpoint] Zones to save: {zonesToSave.Count}");
+            Server.PrintToConsole($"[Lockpoint] Zones directory: {_zonesDirectory}");
+            Server.PrintToConsole($"[Lockpoint] Full file path: {filePath}");
+            Server.PrintToConsole($"[Lockpoint] Directory exists: {Directory.Exists(_zonesDirectory)}");
 
             // Test write permissions by creating a test file
             try
             {
                 var testFile = Path.Combine(_zonesDirectory, "test.txt");
                 File.WriteAllText(testFile, "test");
-                Server.PrintToConsole($"[HardpointCS2] Write permission test: SUCCESS");
+                Server.PrintToConsole($"[Lockpoint] Write permission test: SUCCESS");
                 File.Delete(testFile);
             }
             catch (Exception testEx)
             {
-                Server.PrintToConsole($"[HardpointCS2] Write permission test: FAILED - {testEx.Message}");
+                Server.PrintToConsole($"[Lockpoint] Write permission test: FAILED - {testEx.Message}");
             }
 
             try
@@ -162,7 +162,7 @@ namespace HardpointCS2.Services
                     }).ToList()
                 };
 
-                Server.PrintToConsole($"[HardpointCS2] MapData created with {mapData.Zones.Count} zones");
+                Server.PrintToConsole($"[Lockpoint] MapData created with {mapData.Zones.Count} zones");
 
                 var options = new JsonSerializerOptions
                 {
@@ -170,37 +170,37 @@ namespace HardpointCS2.Services
                 };
 
                 var jsonContent = JsonSerializer.Serialize(mapData, options);
-                Server.PrintToConsole($"[HardpointCS2] JSON serialized, length: {jsonContent.Length}");
+                Server.PrintToConsole($"[Lockpoint] JSON serialized, length: {jsonContent.Length}");
                 
                 // Print first 100 chars of JSON for verification
                 var preview = jsonContent.Length > 100 ? jsonContent.Substring(0, 100) + "..." : jsonContent;
-                Server.PrintToConsole($"[HardpointCS2] JSON preview: {preview}");
+                Server.PrintToConsole($"[Lockpoint] JSON preview: {preview}");
 
                 File.WriteAllText(filePath, jsonContent);
-                Server.PrintToConsole($"[HardpointCS2] File.WriteAllText completed");
+                Server.PrintToConsole($"[Lockpoint] File.WriteAllText completed");
 
                 // Verify file was created
                 if (File.Exists(filePath))
                 {
                     var fileInfo = new FileInfo(filePath);
-                    Server.PrintToConsole($"[HardpointCS2] File verification: EXISTS, size: {fileInfo.Length} bytes");
+                    Server.PrintToConsole($"[Lockpoint] File verification: EXISTS, size: {fileInfo.Length} bytes");
                     
                     // Read back the content to verify
                     var readBack = File.ReadAllText(filePath);
-                    Server.PrintToConsole($"[HardpointCS2] Read back length: {readBack.Length}");
+                    Server.PrintToConsole($"[Lockpoint] Read back length: {readBack.Length}");
                 }
                 else
                 {
-                    Server.PrintToConsole($"[HardpointCS2] ERROR: File was not created!");
+                    Server.PrintToConsole($"[Lockpoint] ERROR: File was not created!");
                 }
 
-                Server.PrintToConsole($"[HardpointCS2] === SAVE DEBUG END ===");
+                Server.PrintToConsole($"[Lockpoint] === SAVE DEBUG END ===");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[HardpointCS2] ERROR saving zones: {ex.Message}");
-                Server.PrintToConsole($"[HardpointCS2] Exception type: {ex.GetType().Name}");
-                Server.PrintToConsole($"[HardpointCS2] Stack trace: {ex.StackTrace}");
+                Server.PrintToConsole($"[Lockpoint] ERROR saving zones: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Exception type: {ex.GetType().Name}");
+                Server.PrintToConsole($"[Lockpoint] Stack trace: {ex.StackTrace}");
             }
         }
 

@@ -1,13 +1,13 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Utils;
-using HardpointCS2.Models;
+using Lockpoint.Models;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 
-namespace HardpointCS2.Services
+namespace Lockpoint.Services
 {
     public class ZoneVisualization
     {

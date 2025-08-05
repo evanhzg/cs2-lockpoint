@@ -2232,9 +2232,9 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/home/evan/CS2/HardpointCS2Plugin/HardpointCS2.csproj",
-      "projectName": "HardpointCS2",
-      "projectPath": "/home/evan/CS2/HardpointCS2Plugin/HardpointCS2.csproj",
+      "projectUniqueName": "/home/evan/CS2/HardpointCS2Plugin/Lockpoint.csproj",
+      "projectName": "Lockpoint",
+      "projectPath": "/home/evan/CS2/HardpointCS2Plugin/Lockpoint.csproj",
       "packagesPath": "/home/evan/.nuget/packages/",
       "outputPath": "/home/evan/CS2/HardpointCS2Plugin/obj/",
       "projectStyle": "PackageReference",

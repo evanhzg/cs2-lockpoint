@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
 
-namespace HardpointCS2.Models
+namespace Lockpoint.Models
 {
     public class Zone
     {
