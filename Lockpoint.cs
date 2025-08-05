@@ -20,7 +20,10 @@ namespace Lockpoint
         public override string ModuleVersion => "0.2.1";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
-
+        
+        private int _gameStartCountdown = 0;
+        private CounterStrikeSharp.API.Modules.Timers.Timer? _countdownTimer = null;
+        
         private readonly Dictionary<CCSPlayerController, DateTime> _playerDeathTimes = new();
         private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
         private readonly float RESPAWN_DELAY = 5.0f; // 5 seconds
@@ -55,6 +58,9 @@ namespace Lockpoint
         private DateTime _zoneResetTime;
         private string _lastCaptureTeam = "";
         private readonly double _newZoneTimer = 5.0; // 5 seconds
+        private bool _isCountingDown = false;
+        private string _countdownMessage = "";
+
         
 
         public override void Load(bool hotReload)
@@ -76,6 +82,607 @@ namespace Lockpoint
             _LockpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
             _LockpointTimer.Elapsed += UpdateLockpointTimer;
             _LockpointTimer.Start();
+        }
+
+        private void OnMapStart(string mapName)
+        {
+            Server.PrintToConsole($"[Lockpoint] Map started: {mapName}");
+            
+            // Configure server settings after map loads
+            AddTimer(1.0f, () =>
+            {
+                ConfigureServerSettings();
+            });
+            
+            AddTimer(2.0f, () =>
+            {
+                ConfigureRoundSettings();
+            });
+            
+            // Load zones after server configuration
+            AddTimer(3.0f, () =>
+            {
+                try
+                {
+                    // FIX: Don't assign void method to a variable
+                    _zoneManager?.LoadZonesForMap(mapName);
+                    
+                    // FIX: Get zones from the manager's Zones property
+                    var zones = _zoneManager?.Zones;
+                    if (zones != null && zones.Count > 0)
+                    {
+                        Server.PrintToConsole($"[Lockpoint] Loaded {zones.Count} zones for map {mapName}");
+                        foreach (var zone in zones)
+                        {
+                            Server.PrintToConsole($"[Lockpoint] Zone: {zone.Name} ({zone.Points.Count} points, {zone.TerroristSpawns.Count} T spawns, {zone.CounterTerroristSpawns.Count} CT spawns)");
+                        }
+                    }
+                    else
+                    {
+                        Server.PrintToConsole($"[Lockpoint] No zones found for map {mapName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[Lockpoint] Error loading zones: {ex.Message}");
+                }
+                
+                InitializeGameState();
+            });
+        }
+
+        private void CheckZonesUpdate(object? sender, System.Timers.ElapsedEventArgs e)
+        {
+            try
+            {
+                Server.NextFrame(() =>
+                {
+                    CheckZones();
+                });
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error in zone check update: {ex.Message}");
+            }
+        }
+
+        private void LockpointUpdate(object? sender, System.Timers.ElapsedEventArgs e)
+        {
+            try
+            {
+                Server.NextFrame(() =>
+                {
+                    UpdateHUD();
+                });
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error in lockpoint update: {ex.Message}");
+            }
+        }
+
+        private void UpdateHUD()
+        {
+            // Your existing HUD update logic
+            if (_gamePhase == GamePhase.Warmup)
+            {
+                // Show warmup messages
+                var activePlayers = Utilities.GetPlayers()
+                    .Where(p => p?.IsValid == true && 
+                            p.Connected == PlayerConnectedState.PlayerConnected && 
+                            !p.IsBot &&
+                            p.TeamNum != (byte)CsTeam.None &&
+                            p.TeamNum != (byte)CsTeam.Spectator)
+                    .ToList();
+
+                string warmupMessage = "";
+                
+                if (activePlayers.Count < 2)
+                {
+                    warmupMessage = "⏳ Need at least 2 players to start...";
+                }
+                else if (_requireTeamReady)
+                {
+                    // Your existing team ready logic
+                    var ctPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.CounterTerrorist).ToList();
+                    var tPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.Terrorist).ToList();
+                    
+                    if (ctPlayers.Count == 0 || tPlayers.Count == 0)
+                    {
+                        warmupMessage = "⏳ Need players on both teams to start...";
+                    }
+                    else
+                    {
+                        var readyCT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.CounterTerrorist);
+                        var readyT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.Terrorist);
+                        
+                        if (!readyCT && !readyT)
+                            warmupMessage = "Type !ready to start the game";
+                        else if (!readyCT)
+                            warmupMessage = "⏳ Waiting for Counter-Terrorists to ready up";
+                        else if (!readyT)
+                            warmupMessage = "⏳ Waiting for Terrorists to ready up";
+                        else
+                            warmupMessage = "✅ All teams ready - starting game!";
+                    }
+                }
+                else
+                {
+                    warmupMessage = $"Ready: {_readyPlayers.Count}/{activePlayers.Count} - Type !ready";
+                }
+
+                foreach (var player in activePlayers)
+                {
+                    if (player?.IsValid == true)
+                    {
+                        player.PrintToCenter(warmupMessage);
+                    }
+                }
+            }
+        }
+
+        private void ConfigureServerSettings()
+        {
+            try
+            {
+                Server.PrintToConsole("[Lockpoint] Configuring server settings...");
+                
+                // Set freeze time to 1 second
+                Server.ExecuteCommand("mp_freezetime 1");
+                
+                // Disable round start and half time cinematics
+                Server.ExecuteCommand("mp_round_restart_delay 1");
+                Server.ExecuteCommand("mp_halftime_duration 1");
+                Server.ExecuteCommand("mp_match_can_clinch 0");
+                
+                // Disable various cinematics and delays
+                Server.ExecuteCommand("tv_delay 0");
+                Server.ExecuteCommand("mp_buytime 0"); // No buy time since it's respawn-based
+                Server.ExecuteCommand("mp_buy_anywhere 0");
+                Server.ExecuteCommand("mp_startmoney 0"); // No money system
+                
+                // Fast round transitions
+                Server.ExecuteCommand("mp_round_restart_delay 1");
+                Server.ExecuteCommand("mp_halftime_duration 1");
+                
+                // Disable team intro cinematics
+                Server.ExecuteCommand("mp_teammatchstat_txt \"\"");
+                Server.ExecuteCommand("mp_teammatchstat_holdtime 0");
+                
+                // Set appropriate game mode settings
+                Server.ExecuteCommand("game_type 0");
+                Server.ExecuteCommand("game_mode 1");
+                
+                Server.PrintToConsole("[Lockpoint] Server settings configured");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error configuring server settings: {ex.Message}");
+            }
+        }
+
+        private void ConfigureRoundSettings()
+        {
+            try
+            {
+                Server.PrintToConsole("[Lockpoint] Configuring round settings...");
+                
+                // Disable automatic round ending
+                Server.ExecuteCommand("mp_ignore_round_win_conditions 1");
+                
+                // Long round time since we control rounds manually
+                Server.ExecuteCommand("mp_roundtime 60"); // 60 minutes, effectively infinite
+                Server.ExecuteCommand("mp_roundtime_defuse 60");
+                Server.ExecuteCommand("mp_roundtime_hostage 60");
+                
+                // No bomb or hostage objectives
+                Server.ExecuteCommand("mp_plant_c4_anywhere 0");
+                Server.ExecuteCommand("mp_give_player_c4 0");
+                
+                // Disable economy
+                Server.ExecuteCommand("mp_maxmoney 0");
+                Server.ExecuteCommand("mp_startmoney 0");
+                Server.ExecuteCommand("mp_afterroundmoney 0");
+                
+                // Remove all weapons and give basic loadout
+                Server.ExecuteCommand("mp_weapons_allow_map_placed 0");
+                Server.ExecuteCommand("mp_ct_default_primary \"\"");
+                Server.ExecuteCommand("mp_t_default_primary \"\"");
+                Server.ExecuteCommand("mp_ct_default_secondary \"\"");
+                Server.ExecuteCommand("mp_t_default_secondary \"\"");
+                
+                Server.PrintToConsole("[Lockpoint] Round settings configured");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error configuring round settings: {ex.Message}");
+            }
+        }
+
+        private void InitializeGameState()
+        {
+            _gamePhase = GamePhase.Warmup;
+            _readyPlayers.Clear();
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            
+            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+            UpdateTeamScore(CsTeam.Terrorist, 0);
+            
+            // Start the game timers
+            if (_zoneCheckTimer == null)
+            {
+                _zoneCheckTimer = new System.Timers.Timer(50);
+                _zoneCheckTimer.Elapsed += CheckZonesUpdate;
+            }
+            
+            if (_LockpointTimer == null)
+            {
+                _LockpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
+                _LockpointTimer.Elapsed += LockpointUpdate;
+            }
+            
+            _zoneCheckTimer.Start();
+            _LockpointTimer.Start();
+            
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}⏳ Type !ready to start the game{ChatColors.Default}");
+            Server.PrintToConsole("[Lockpoint] Game state initialized");
+        }
+
+        private void StartGame()
+        {
+            try
+            {
+                if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+                {
+                    Server.PrintToChatAll($"{ChatColors.Red}[Lockpoint] Cannot start game - no zones available!{ChatColors.Default}");
+                    return;
+                }
+
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}Game starting in 3 seconds...{ChatColors.Default}");
+                Server.PrintToConsole("[Lockpoint] Starting game countdown");
+
+                // Set countdown state to prevent HUD override
+                _isCountingDown = true;
+                _gameStartCountdown = 3;
+                _countdownTimer = AddTimer(1.0f, () => 
+                {
+                    HandleGameStartCountdown();
+                });
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error starting game: {ex.Message}");
+            }
+        }
+
+        private void CheckZones()
+        {
+            // Don't check zones if we're waiting for a new zone or no active zone
+            if (_gamePhase != GamePhase.Active || activeZone == null || _waitingForNewZone)
+                return;
+
+            try
+            {
+                // Clear the zone's player list
+                activeZone.PlayersInZone.Clear();
+
+                // Get all valid players
+                var allPlayers = Utilities.GetPlayers()
+                    .Where(p => p?.IsValid == true && 
+                            p.Connected == PlayerConnectedState.PlayerConnected && 
+                            !p.IsBot && 
+                            p.PawnIsAlive &&
+                            p.PlayerPawn?.Value?.AbsOrigin != null &&
+                            p.TeamNum != (byte)CsTeam.None &&
+                            p.TeamNum != (byte)CsTeam.Spectator)
+                    .ToList();
+
+                // Check which players are in the zone
+                foreach (var player in allPlayers)
+                {
+                    if (IsPlayerInZone(player, activeZone))
+                    {
+                        activeZone.PlayersInZone.Add(player);
+                    }
+                }
+
+                // Process zone control logic
+                ProcessZoneControl();
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error checking zones: {ex.Message}");
+            }
+        }
+
+        private void ProcessZoneControl()
+        {
+            if (activeZone == null) return;
+
+            try
+            {
+                var ctPlayersInZone = activeZone.PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist);
+                var tPlayersInZone = activeZone.PlayersInZone.Count(p => p.TeamNum == (byte)CsTeam.Terrorist);
+
+                if (ctPlayersInZone > 0 && tPlayersInZone == 0)
+                {
+                    _ctZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                    _lastCaptureTeam = "CT"; // This uses the field
+                }
+                else if (tPlayersInZone > 0 && ctPlayersInZone == 0)
+                {
+                    _tZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                    _lastCaptureTeam = "T"; // This uses the field
+                }
+                else
+                {
+                    // Contested or empty zone - no progress
+                    _lastCaptureTeam = ""; // This uses the field
+                }
+
+                // Check for capture
+                if (_ctZoneTime >= CAPTURE_TIME)
+                {
+                    OnZoneCaptured("CT");
+                }
+                else if (_tZoneTime >= CAPTURE_TIME)
+                {
+                    OnZoneCaptured("T");
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error processing zone control: {ex.Message}");
+            }
+        }
+
+        private void OnZoneCaptured(string team)
+        {
+            try
+            {
+                if (team == "CT")
+                {
+                    _ctScore++;
+                    UpdateTeamScore(CsTeam.CounterTerrorist, _ctScore);
+                    Server.PrintToChatAll($"{ChatColors.Blue}💙 Counter-Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone?.Name}!{ChatColors.Default}");
+                }
+                else if (team == "T")
+                {
+                    _tScore++;
+                    UpdateTeamScore(CsTeam.Terrorist, _tScore);
+                    Server.PrintToChatAll($"{ChatColors.Red}❤️ Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone?.Name}!{ChatColors.Default}");
+                }
+
+                // Check for game end condition
+                CheckGameEndCondition();
+
+                ResetZoneAndSelectNew();
+
+                Server.PrintToConsole($"[Lockpoint] Zone captured by {team}. Score: CT={_ctScore}, T={_tScore}. Waiting for new zone...");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error handling zone capture: {ex.Message}");
+            }
+        }
+
+        private bool IsPlayerInZone(CCSPlayerController player, Zone zone)
+        {
+            if (player?.PlayerPawn?.Value?.AbsOrigin == null || zone?.Points == null || zone.Points.Count < 3)
+                return false;
+
+            try
+            {
+                var playerPos = player.PlayerPawn.Value.AbsOrigin;
+                return IsPointInPolygon(playerPos.X, playerPos.Y, zone.Points);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error checking if player {player.PlayerName} is in zone: {ex.Message}");
+                return false;
+            }
+        }
+
+        private bool IsPointInPolygon(float x, float y, List<CSVector> polygon)
+        {
+            int intersections = 0;
+            int vertexCount = polygon.Count;
+
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int j = (i + 1) % vertexCount;
+                
+                if (((polygon[i].Y > y) != (polygon[j].Y > y)) &&
+                    (x < (polygon[j].X - polygon[i].X) * (y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X))
+                {
+                    intersections++;
+                }
+            }
+
+            return (intersections % 2) == 1;
+        }
+
+        private void CheckGameEndCondition()
+        {
+            const int WINNING_SCORE = 5; // Adjust as needed
+            
+            if (_ctScore >= WINNING_SCORE)
+            {
+                EndGame("CT");
+            }
+            else if (_tScore >= WINNING_SCORE)
+            {
+                EndGame("T");
+            }
+        }
+
+        private void EndGame(string winningTeam)
+        {
+            try
+            {
+                _gamePhase = GamePhase.Ended;
+                _zoneCheckTimer?.Stop();
+                
+                var teamName = winningTeam == "CT" ? "Counter-Terrorists" : "Terrorists";
+                var teamColor = winningTeam == "CT" ? ChatColors.Blue : ChatColors.Red;
+                
+                Server.PrintToChatAll($"{ChatColors.Green}🏆 GAME OVER! 🏆{ChatColors.Default}");
+                Server.PrintToChatAll($"{teamColor}{teamName} WIN!{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Yellow}Final Score: CT {_ctScore} - {_tScore} T{ChatColors.Default}");
+                
+                // Clear active zone
+                activeZone = null;
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                // Reset to warmup after delay
+                AddTimer(10.0f, () =>
+                {
+                    _gamePhase = GamePhase.Warmup;
+                    _readyPlayers.Clear();
+                    _ctScore = 0;
+                    _tScore = 0;
+                    _ctZoneTime = 0f;
+                    _tZoneTime = 0f;
+                    
+                    UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+                    UpdateTeamScore(CsTeam.Terrorist, 0);
+                    
+                    Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}⏳ Type !ready to start a new game{ChatColors.Default}");
+                    RespawnAllPlayers();
+                });
+                
+                Server.PrintToConsole($"[Lockpoint] Game ended. {teamName} won!");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error ending game: {ex.Message}");
+            }
+        }
+
+        private void HandleGameStartCountdown()
+        {
+            try
+            {
+                if (_gameStartCountdown > 0)
+                {
+                    // Update countdown message for HUD
+                    _countdownMessage = $"🎯 LOCKPOINT STARTING IN {_gameStartCountdown}";
+
+                    // Also send to chat
+                    Server.PrintToChatAll($"{ChatColors.Yellow}Game starting in {_gameStartCountdown}...{ChatColors.Default}");
+                    _gameStartCountdown--;
+                    
+                    // Schedule next countdown
+                    if (_gameStartCountdown >= 0)
+                    {
+                        _countdownTimer = AddTimer(1.0f, () => 
+                        {
+                            HandleGameStartCountdown();
+                        });
+                    }
+                }
+                else
+                {
+                    // Countdown finished, clear countdown state
+                    _isCountingDown = false;
+                    _countdownMessage = "";
+                    _countdownTimer?.Kill();
+                    _countdownTimer = null;
+                    
+                    StartActualGame();
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error in countdown: {ex.Message}");
+                _isCountingDown = false;
+                _countdownMessage = "";
+                _countdownTimer?.Kill();
+                _countdownTimer = null;
+            }
+        }
+
+        private void StartActualGame()
+        {
+            try
+            {
+                _gamePhase = GamePhase.Active;
+                
+                // Reset scores
+                _ctScore = 0;
+                _tScore = 0;
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
+                _previousZone = null;
+                
+                UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+                UpdateTeamScore(CsTeam.Terrorist, 0);
+                
+                // Select first zone BEFORE respawning players
+                SelectRandomZone();
+                
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}🔥 GAME STARTED! 🔥{ChatColors.Default}");
+                
+                if (activeZone != null)
+                {
+                    Server.PrintToChatAll($"{ChatColors.Yellow}📍 Capture Zone: {ChatColors.Green}{activeZone.Name}{ChatColors.Default}");
+                }
+                
+                // Force a new round with proper spawns
+                Server.ExecuteCommand("mp_restartgame 1");
+                
+                // Start game after round restart with immediate spawning
+                AddTimer(1.0f, () =>
+                {
+                    // Respawn all players at zone-based spawns - no additional delay
+                    RespawnAllPlayers();
+                    
+                    // Start timers immediately after respawn
+                    _zoneCheckTimer?.Start();
+                    _LockpointTimer?.Start();
+                });
+                
+                Server.PrintToConsole("[Lockpoint] Game started successfully");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error starting actual game: {ex.Message}");
+            }
+        }
+
+        private void SelectRandomZone()
+        {
+            try
+            {
+                if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+                {
+                    Server.PrintToConsole("[Lockpoint] No zones available to select");
+                    return;
+                }
+
+                var random = new Random();
+                var availableZones = _zoneManager.Zones.ToList();
+                
+                // Don't repeat the same zone immediately
+                if (_previousZone != null && availableZones.Count > 1)
+                {
+                    availableZones.Remove(_previousZone);
+                }
+                
+                activeZone = availableZones[random.Next(availableZones.Count)];
+                
+                if (activeZone != null)
+                {
+                    Server.PrintToConsole($"[Lockpoint] Selected zone: {activeZone.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error selecting random zone: {ex.Message}");
+            }
         }
 
         private void UpdateLockpointTimer(object? sender, System.Timers.ElapsedEventArgs e)
@@ -158,88 +765,47 @@ namespace Lockpoint
 
         private void UpdateLockpointHUD()
         {
-            // Handle edit mode
-            if (_gamePhase == GamePhase.EditMode)
+            try
             {
-                UpdateEditModeHUD();
-                return;
-            }
-            // Handle warmup phase
-            if (_gamePhase == GamePhase.Warmup)
-            {
-                UpdateWarmupHUD();
-                return;
-            }
-
-            // Check if we're in the waiting period between zones
-            if (activeZone == null && _waitingForNewZone)
-            {
-                var remainingTime = Math.Max(0, _newZoneTimer - (DateTime.Now - _zoneResetTime).TotalSeconds);
-                string waitMessage = $"🏆 {_lastCaptureTeam} scored! New zone in {remainingTime:F0}s...";
+                // PRIORITY 1: Show countdown if active
+                if (_isCountingDown && !string.IsNullOrEmpty(_countdownMessage))
+                {
+                    DisplayCountdownHUD();
+                    return;
+                }
                 
-                foreach (var player in Utilities.GetPlayers())
+                // PRIORITY 2: Handle other game phases
+                if (_gamePhase == GamePhase.EditMode)
                 {
-                    if (player?.IsValid == true && 
-                        player.Connected == PlayerConnectedState.PlayerConnected && 
-                        !player.IsBot)
-                    {
-                        // Only show zone message if player is alive (not waiting for respawn)
-                        if (player.PawnIsAlive && !_playerDeathTimes.ContainsKey(player))
-                        {
-                            player.PrintToCenter(waitMessage);
-                        }
-                    }
+                    UpdateEditModeHUD();
+                    return;
                 }
-                return;
+                
+                if (_gamePhase == GamePhase.Warmup)
+                {
+                    UpdateWarmupHUD();
+                    return;
+                }
+                
+                if (_gamePhase == GamePhase.Active)
+                {
+                    UpdateActiveGameHUD();
+                    return;
+                }
+                
+                if (_gamePhase == GamePhase.Ended)
+                {
+                    UpdateEndedGameHUD();
+                    return;
+                }
             }
-
-            if (activeZone == null) return;
-
-            var zoneState = activeZone.GetZoneState();
-            var ctProgress = (_ctZoneTime / CAPTURE_TIME * 100f);
-            var tProgress = (_tZoneTime / CAPTURE_TIME * 100f);
-
-            string statusMessage = zoneState switch
+            catch (Exception ex)
             {
-                ZoneState.CTControlled => $"🔵 CTs controlling {activeZone.Name} - Progress: {ctProgress:F0}%",
-                ZoneState.TControlled => $"🔴 Ts controlling {activeZone.Name} - Progress: {tProgress:F0}%",
-                ZoneState.Contested => $"⚪ {activeZone.Name} CONTESTED - Timers paused | CT: {ctProgress:F0}% | T: {tProgress:F0}%",
-                ZoneState.Neutral => GetNeutralMessage(activeZone.Name, ctProgress, tProgress),
-                _ => $"⚪ {activeZone.Name} - Status unknown"
-            };
-
-            // Print to center of screen for living players only
-            foreach (var player in Utilities.GetPlayers())
-            {
-                if (player?.IsValid == true && 
-                    player.Connected == PlayerConnectedState.PlayerConnected && 
-                    !player.IsBot)
-                {
-                    // Only show zone message if player is alive (not waiting for respawn)
-                    if (player.PawnIsAlive && !_playerDeathTimes.ContainsKey(player))
-                    {
-                        player.PrintToCenter(statusMessage);
-                    }
-                }
+                Server.PrintToConsole($"[Lockpoint] Error updating HUD: {ex.Message}");
             }
         }
 
-        private void UpdateEditModeHUD()
-        {
-            var zoneCount = _zoneManager?.Zones?.Count ?? 0;
-            var editMessage = $"🔧 EDIT MODE - {zoneCount} zones | Use !createzone, !removezone";
-            
-            foreach (var player in Utilities.GetPlayers())
-            {
-                if (player?.IsValid == true && 
-                    player.Connected == PlayerConnectedState.PlayerConnected && 
-                    !player.IsBot)
-                {
-                    player.PrintToCenter(editMessage);
-                }
-            }
-        }
-        private void UpdateWarmupHUD()
+        private void DisplayCountdownHUD()
         {
             var activePlayers = Utilities.GetPlayers()
                 .Where(p => p?.IsValid == true && 
@@ -247,14 +813,53 @@ namespace Lockpoint
                         !p.IsBot)
                 .ToList();
 
-            string warmupMessage;
+            foreach (var player in activePlayers)
+            {
+                if (player?.IsValid == true)
+                {
+                    player.PrintToCenter(_countdownMessage);
+                }
+            }
+        }
 
+        private void UpdateEditModeHUD()
+        {
+            var activePlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot)
+                .ToList();
+
+            foreach (var player in activePlayers)
+            {
+                if (player?.IsValid == true)
+                {
+                    var message = "🔧 EDIT MODE - Game is paused";
+                    if (_zoneBeingEdited != null)
+                    {
+                        message += $"\nEditing: {_zoneBeingEdited.Name}";
+                    }
+                    player.PrintToCenter(message);
+                }
+            }
+        }
+
+        private void UpdateWarmupHUD()
+        {
+            // This is the code you already have in your UpdateHUD method
+            var activePlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot &&
+                        p.TeamNum != (byte)CsTeam.None &&
+                        p.TeamNum != (byte)CsTeam.Spectator)
+                .ToList();
+
+            string warmupMessage = "";
+            
             if (activePlayers.Count < 2)
             {
-                if (activePlayers.Count == 1)
-                    warmupMessage = "⏳ At least 2 players required to play Lockpoint...";
-                else
-                    warmupMessage = "⏳ Waiting for players to join...";
+                warmupMessage = "⏳ Need at least 2 players to start...";
             }
             else if (_requireTeamReady)
             {
@@ -277,35 +882,125 @@ namespace Lockpoint
                     else if (!readyT)
                         warmupMessage = "⏳ Waiting for Terrorists to ready up";
                     else
-                        warmupMessage = "🎮 Starting soon...";
+                        warmupMessage = "✅ All teams ready - starting game!";
                 }
             }
             else
             {
-                var readyCount = _readyPlayers.Count;
-                var totalCount = activePlayers.Count;
-                if (readyCount == totalCount)
-                    warmupMessage = "🎮 Starting soon...";
-                else
-                    warmupMessage = $"⏳ Waiting for {totalCount - readyCount} players to ready up ({readyCount}/{totalCount})";
+                warmupMessage = $"Ready: {_readyPlayers.Count}/{activePlayers.Count} - Type !ready";
             }
 
-            // Send warmup message to ALL players (dead players don't get respawn timer in warmup)
-            foreach (var player in Utilities.GetPlayers())
+            foreach (var player in activePlayers)
             {
-                if (player?.IsValid == true && 
-                    player.Connected == PlayerConnectedState.PlayerConnected && 
-                    !player.IsBot)
+                if (player?.IsValid == true)
                 {
                     player.PrintToCenter(warmupMessage);
                 }
             }
+        }
 
-            // Print not ready players every 10 seconds
-            if ((DateTime.Now - _lastReadyMessage).TotalSeconds >= _readyMessageInterval)
+        private void UpdateActiveGameHUD()
+        {
+            // Check if we're waiting for a new zone
+            if (_waitingForNewZone)
             {
-                PrintNotReadyPlayers(activePlayers);
-                _lastReadyMessage = DateTime.Now;
+                var timeLeft = _zoneResetTime - DateTime.Now;
+                if (timeLeft.TotalSeconds <= 0)
+                {
+                    // Time to activate new zone - use the dedicated method
+                    _waitingForNewZone = false;
+                    ActivateNewZone(); // This will show "New Lockpoint: xxx"
+                }
+                else
+                {
+                    // Show countdown - NO ACTIVE ZONE during this time
+                    var activePlayers = Utilities.GetPlayers()
+                        .Where(p => p?.IsValid == true && 
+                                p.Connected == PlayerConnectedState.PlayerConnected && 
+                                !p.IsBot)
+                        .ToList();
+
+                    foreach (var player in activePlayers)
+                    {
+                        if (player?.IsValid == true)
+                        {
+                            player.PrintToCenter($"⏳ New zone in {timeLeft.TotalSeconds:F0}s\nScore: CT {_ctScore} - {_tScore} T");
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Rest of the HUD logic stays the same...
+            if (activeZone != null)
+            {
+                var ctProgress = (_ctZoneTime / CAPTURE_TIME) * 100f;
+                var tProgress = (_tZoneTime / CAPTURE_TIME) * 100f;
+                
+                var ctPlayersInZone = activeZone.PlayersInZone?.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist) ?? 0;
+                var tPlayersInZone = activeZone.PlayersInZone?.Count(p => p.TeamNum == (byte)CsTeam.Terrorist) ?? 0;
+
+                var activePlayers = Utilities.GetPlayers()
+                    .Where(p => p?.IsValid == true && 
+                            p.Connected == PlayerConnectedState.PlayerConnected && 
+                            !p.IsBot)
+                    .ToList();
+
+                foreach (var player in activePlayers)
+                {
+                    if (player?.IsValid == true)
+                    {
+                        string status = "";
+                        
+                        if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress:f0 == 0)
+                        {
+                            status = $"🔵 CT Capturing: {ctProgress:F0}%";
+                        }
+                        else if (ctPlayersInZone > 0 && tPlayersInZone == 0 && tProgress:f0 > 0)
+                        {
+                            status = $"🔵 CT Capturing: {ctProgress:F0}% (T at {tProgress:f0}%)";
+                        }
+                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress:f0 == 0)
+                        {
+                            status = $"🔴 T Capturing: {tProgress:F0}%";
+                        }
+                        else if (tPlayersInZone > 0 && ctPlayersInZone == 0 && ctProgress:f0 > 0)
+                        {
+                            status = $"🔴 T Capturing: {tProgress:F0}% (CT at {ctProgress:f0}%)";
+                        }
+                        else if (ctPlayersInZone > 0 && tPlayersInZone > 0)
+                        {
+                            status = $"⚡ CONTESTED (CT: {ctProgress:f0}% | T: {tProgress:f0}%)";
+                        }
+                        else if (ctPlayersInZone == 0 && tPlayersInZone == 0 && ctProgress > 0 || tProgress > 0)
+                        {
+                            status = $"⚪ Zone clear - CT: {ctProgress:F0}% | T: {tProgress:F0}%";
+                        }
+                        else
+                        {
+                            status = "⚪ Zone clear - No progress";
+                        }
+
+                        player.PrintToCenter($"📍 {activeZone.Name}\n{status}\nScore: CT {_ctScore} - {_tScore} T");
+                    }
+                }
+            }
+        }
+
+        private void UpdateEndedGameHUD()
+        {
+            var activePlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot)
+                .ToList();
+
+            foreach (var player in activePlayers)
+            {
+                if (player?.IsValid == true)
+                {
+                    player.PrintToCenter($"🏆 GAME OVER!\nCT {_ctScore} - {_tScore} T\nReturning to warmup...");
+                }
             }
         }
 
@@ -345,65 +1040,13 @@ namespace Lockpoint
             
             // Set waiting state
             _waitingForNewZone = true;
-            _zoneResetTime = DateTime.Now;
+            _zoneResetTime = DateTime.Now.AddSeconds(_newZoneTimer);
             
             activeZone = null; // Clear active zone immediately
             
             // Announce zone cleared and wait period
             Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} -{ChatColors.Orange} Zone cleared!{ChatColors.Default} Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
             Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - ⏱{ChatColors.Yellow} New zone in 5 seconds...{ChatColors.Default}");
-    
-            // Wait 5 seconds before selecting new zone
-            AddTimer(5.0f, () =>
-            {
-                _waitingForNewZone = false;
-                SelectNewZone();
-            });
-        }
-
-        private void SelectNewZone()
-        {
-            if (_zoneManager?.Zones == null || _zoneManager.Zones.Count <= 1)
-            {
-                Server.PrintToChatAll($"{ChatColors.Red}⚠ Not enough zones available for rotation!{ChatColors.Default}");
-                return;
-            }
-
-            var availableZones = _zoneManager.Zones.Where(z => z != _previousZone).ToList();
-            
-            if (availableZones.Count == 0)
-            {
-                // Fallback: use any zone if filtering failed
-                availableZones = _zoneManager.Zones.ToList();
-            }
-
-            if (availableZones.Count == 0)
-            {
-                Server.PrintToChatAll($"{ChatColors.Red}⚠ No zones available!{ChatColors.Default}");
-                return;
-            }
-
-            var random = new Random();
-            var newZone = availableZones[random.Next(availableZones.Count)];
-            
-            activeZone = newZone;
-            _zoneVisualization?.DrawZone(activeZone);
-            
-            Server.PrintToChatAll($"{ChatColors.Green}🎯 New Lockpoint: {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}");
-            Server.PrintToConsole($"[Lockpoint] New zone selected: {activeZone.Name}");
-        }
-
-        private void OnMapStart(string mapName)
-        {
-            Server.NextFrame(() =>
-            {
-                Server.PrintToConsole($"[Lockpoint] Map started: {mapName}");
-                Logger.LogInformation($"Loading zones for map: {mapName}");
-                
-                _zoneManager?.LoadZonesForMap(mapName);
-
-                Logger.LogInformation($"Loaded {_zoneManager?.Zones.Count ?? 0} zones for map {mapName}");
-            });
         }
 
         private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
@@ -551,28 +1194,54 @@ namespace Lockpoint
 
         private void DrawRandomZone()
         {
-            // Draw a random zone for testing purposes
-            if (_zoneManager?.Zones != null && _zoneManager.Zones.Count > 0)
+            try
             {
-                // Clear all existing visualizations first
-                _zoneVisualization?.ClearZoneVisualization();
+                if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+                {
+                    Server.PrintToConsole("[Lockpoint] No zones available to draw");
+                    return;
+                }
+
+                SelectRandomZone(); // This calls the base zone selection logic
                 
-                var random = new Random();
-                var randomZone = _zoneManager.Zones[random.Next(_zoneManager.Zones.Count)];
-                
-                // Only draw the selected zone
-                _zoneVisualization?.DrawZone(randomZone);
-                Server.PrintToConsole($"[Lockpoint] Drew random zone: {randomZone.Name}");
-                Server.PrintToChatAll($"{ChatColors.Green}🎯 Active Lockpoint: {ChatColors.Yellow}{randomZone.Name}{ChatColors.Default}");
-                activeZone = randomZone;
-                _ctZoneTime = 0f;
-                _tZoneTime = 0f;
+                if (activeZone != null)
+                {
+                    _zoneVisualization?.DrawZone(activeZone);
+                    // Used for edit mode exit and round start
+                    Server.PrintToChatAll($"{ChatColors.Yellow}📍 Zone Selected: {ChatColors.Green}{activeZone.Name}{ChatColors.Default}");
+                    Server.PrintToConsole($"[Lockpoint] Drew random zone: {activeZone.Name}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                Server.PrintToConsole("[Lockpoint] No zones available to draw");
-                Server.PrintToChatAll($"{ChatColors.Red}⚠ No zones available to draw!{ChatColors.Default}");
-                activeZone = null;
+                Server.PrintToConsole($"[Lockpoint] Error drawing random zone: {ex.Message}");
+            }
+        }
+
+        // Create a separate method for post-capture zone activation
+        private void ActivateNewZone()
+        {
+            try
+            {
+                if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+                {
+                    Server.PrintToConsole("[Lockpoint] No zones available to activate");
+                    return;
+                }
+
+                SelectRandomZone(); // This calls the base zone selection logic
+                
+                if (activeZone != null)
+                {
+                    _zoneVisualization?.DrawZone(activeZone);
+                    // This is the ONLY message that should appear after the 5-second wait
+                    Server.PrintToChatAll($"{ChatColors.Yellow}📍 New Lockpoint: {ChatColors.Green}{activeZone.Name}{ChatColors.Default}");
+                    Server.PrintToConsole($"[Lockpoint] New zone activated after capture: {activeZone.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error activating new zone: {ex.Message}");
             }
         }
 
@@ -680,7 +1349,11 @@ namespace Lockpoint
 
             if (activePlayers.Count < 2)
             {
-                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}Need at least 2 players to start!{ChatColors.Default}");
+                if (DateTime.Now.Subtract(_lastReadyMessage).TotalSeconds >= _readyMessageInterval)
+                {
+                    Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Red}Need at least 2 players to start!{ChatColors.Default}");
+                    _lastReadyMessage = DateTime.Now;
+                }
                 return;
             }
 
@@ -710,40 +1383,6 @@ namespace Lockpoint
             }
         }
 
-        private void StartGame()
-        {
-            _gamePhase = GamePhase.Active;
-            _readyPlayers.Clear();
-            
-            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}🎮 GAME STARTED! 🎮{ChatColors.Default}");
-            
-            // Reset scores
-            _ctScore = 0;
-            _tScore = 0;
-            _ctZoneTime = 0f;
-            _tZoneTime = 0f;
-            _previousZone = null;
-            
-            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
-            UpdateTeamScore(CsTeam.Terrorist, 0);
-            
-            // Respawn all players for the new game phase
-            Server.NextFrame(() =>
-            {
-                RespawnAllPlayers();
-                
-                // Wait a moment for respawns to complete, then start the first zone
-                AddTimer(1.0f, () =>
-                {
-                    DrawRandomZone();
-                    
-                    // Start timers
-                    _zoneCheckTimer?.Start();
-                    _LockpointTimer?.Start();
-                });
-            });
-        }
-
         private void RespawnAllPlayers()
         {
             Server.PrintToConsole("[Lockpoint] Respawning all players...");
@@ -758,60 +1397,56 @@ namespace Lockpoint
                 {
                     try
                     {
+                        // Get spawn point BEFORE respawning
+                        Vector? spawnPoint;
+                        
+                        if (_gamePhase == GamePhase.Warmup)
+                        {
+                            // Use random spawn during warmup
+                            spawnPoint = GetRandomSpawnPointAny();
+                        }
+                        else if (_gamePhase == GamePhase.Active)
+                        {
+                            // Use zone-based spawn during active game
+                            spawnPoint = GetZoneBasedSpawn(player.TeamNum);
+                            Server.PrintToConsole($"[Lockpoint] Getting zone spawn for {player.PlayerName} (Team: {player.TeamNum})");
+                        }
+                        else
+                        {
+                            // Use team spawn for other phases
+                            spawnPoint = GetRandomSpawnPoint(player.TeamNum);
+                        }
+                        
                         // Force respawn everyone, dead or alive
                         player.Respawn();
                         
-                        // If in warmup phase, teleport to random spawn after respawn
-                        if (_gamePhase == GamePhase.Warmup)
+                        // Teleport immediately after respawn - no delay
+                        Server.NextFrame(() =>
                         {
-                            AddTimer(0.2f, () =>
+                            if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
                             {
-                                if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
+                                if (spawnPoint != null)
                                 {
-                                    var randomSpawn = GetRandomSpawnPointAny();
-                                    if (randomSpawn != null)
-                                    {
-                                        player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                        Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to random warmup spawn");
-                                    }
+                                    player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                                    Server.PrintToConsole($"[Lockpoint] Instantly teleported {player.PlayerName} to appropriate spawn");
                                 }
-                            });
-                        }
+                                else
+                                {
+                                    Server.PrintToConsole($"[Lockpoint] Failed to get spawn point for {player.PlayerName}");
+                                }
+                            }
+                        });
                         
                         Server.PrintToConsole($"[Lockpoint] Respawned player: {player.PlayerName}");
-                        player.PrintToChat($"{ChatColors.Green}You have been respawned for the new phase!{ChatColors.Default}");
+                        
+                        if (_gamePhase == GamePhase.Active)
+                        {
+                            player.PrintToChat($"{ChatColors.Green}Game started! Fight for the zone!{ChatColors.Default}");
+                        }
                     }
                     catch (Exception ex)
                     {
                         Server.PrintToConsole($"[Lockpoint] Error respawning player {player.PlayerName}: {ex.Message}");
-                        
-                        // Fallback: try teleporting to spawn if respawn fails
-                        try
-                        {
-                            Vector? spawnPoint;
-                            
-                            if (_gamePhase == GamePhase.Warmup)
-                            {
-                                // Use random spawn during warmup
-                                spawnPoint = GetRandomSpawnPointAny();
-                            }
-                            else
-                            {
-                                // Use team spawn during active game
-                                spawnPoint = GetRandomSpawnPoint(player.TeamNum);
-                            }
-                            
-                            if (spawnPoint != null && player.PlayerPawn?.Value != null)
-                            {
-                                player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                player.PlayerPawn.Value.Health = 100;
-                                Server.PrintToConsole($"[Lockpoint] Teleported player {player.PlayerName} to spawn as fallback");
-                            }
-                        }
-                        catch (Exception teleportEx)
-                        {
-                            Server.PrintToConsole($"[Lockpoint] Fallback teleport failed for {player.PlayerName}: {teleportEx.Message}");
-                        }
                     }
                 }
             }
@@ -1115,18 +1750,24 @@ namespace Lockpoint
                         return;
                     }
 
+                    // Get spawn point BEFORE respawning
+                    var spawnPoint = GetZoneBasedSpawn(player.TeamNum);
+                    
                     player.Respawn();
-
-                    // Use zone-based spawn after respawn
-                    AddTimer(0.2f, () =>
+                    
+                    // Teleport immediately after respawn - no delay
+                    Server.NextFrame(() =>
                     {
                         if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
                         {
-                            var spawnPoint = GetZoneBasedSpawn(player.TeamNum); // This should use zone spawns
                             if (spawnPoint != null)
                             {
                                 player.PlayerPawn.Value.Teleport(spawnPoint, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to zone-based spawn");
+                                Server.PrintToConsole($"[Lockpoint] Instantly teleported {player.PlayerName} to zone-based spawn");
+                            }
+                            else
+                            {
+                                Server.PrintToConsole($"[Lockpoint] Failed to get spawn point for {player.PlayerName}");
                             }
                         }
                     });
@@ -2068,11 +2709,18 @@ namespace Lockpoint
         [RequiresPermissions("@css/root")]
         public void OnCommandStop(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (_gamePhase == GamePhase.Warmup)
+            if (_gamePhase == GamePhase.Warmup && !_isCountingDown)
             {
                 commandInfo.ReplyToCommand($"{ChatColors.Yellow}Game is already in warmup phase!{ChatColors.Default}");
                 return;
             }
+
+            // Cancel countdown if it's running
+            _isCountingDown = false;
+            _countdownMessage = "";
+            _countdownTimer?.Kill();
+            _countdownTimer = null;
+            _gameStartCountdown = 0;
 
             _gamePhase = GamePhase.Warmup;
             _readyPlayers.Clear();
@@ -2574,30 +3222,212 @@ namespace Lockpoint
 
         private void DrawAllZonesForEdit()
         {
-            if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
-            {
-                Server.PrintToChatAll($"{ChatColors.Yellow}No zones to display{ChatColors.Default}");
-                return;
-            }
-
             try
             {
-                // Clear existing visualizations first
+                if (_zoneManager?.Zones == null)
+                {
+                    Server.PrintToConsole("[Lockpoint] No zones to draw for edit mode");
+                    return;
+                }
+
                 _zoneVisualization?.ClearZoneVisualization();
                 
-                // Draw all zones
                 foreach (var zone in _zoneManager.Zones)
                 {
                     _zoneVisualization?.DrawZone(zone);
                 }
                 
-                Server.PrintToChatAll($"{ChatColors.Green}Displaying all {_zoneManager.Zones.Count} zones for editing{ChatColors.Default}");
-                Server.PrintToConsole($"[Lockpoint] Drew all {_zoneManager.Zones.Count} zones for edit mode");
+                Server.PrintToConsole($"[Lockpoint] Drew {_zoneManager.Zones.Count} zones for edit mode");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error drawing zones for edit mode: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error drawing zones for edit: {ex.Message}");
             }
+        }
+
+        [ConsoleCommand("css_configlockpoint", "Configure server settings for Lockpoint mode (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandConfigLockpoint(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            AddTimer(0.1f, () => ConfigureServerSettings());
+            AddTimer(0.5f, () => ConfigureRoundSettings());
+            
+            var message = "Server configured for Lockpoint mode!";
+            if (player?.IsValid == true)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            }
+            else
+            {
+                Server.PrintToConsole($"[Lockpoint] {message}");
+            }
+        }
+
+        [ConsoleCommand("css_forcerestart", "Force restart round with Lockpoint settings (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandForceRestart(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            AddTimer(0.1f, () => 
+            {
+                ConfigureServerSettings();
+                ConfigureRoundSettings();
+                Server.ExecuteCommand("mp_restartgame 1");
+            });
+            
+            var message = "Round restarted with Lockpoint settings!";
+            if (player?.IsValid == true)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            }
+            else
+            {
+                Server.PrintToConsole($"[Lockpoint] {message}");
+            }
+        }
+
+        [ConsoleCommand("css_help", "Show all available Lockpoint commands.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        public void OnCommandHelp(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var isAdmin = player?.IsValid == true && AdminManager.PlayerHasPermissions(player, "@css/root");
+            
+            if (player?.IsValid == true)
+            {
+                // Send to player via chat
+                player.PrintToChat($"{ChatColors.Green}[Lockpoint Commands]{ChatColors.Default}");
+                player.PrintToChat($"{ChatColors.Yellow}=== Player Commands ==={ChatColors.Default}");
+                player.PrintToChat($"{ChatColors.LightBlue}!ready{ChatColors.Default} - Mark yourself as ready to start");
+                player.PrintToChat($"{ChatColors.LightBlue}!unready{ChatColors.Default} - Mark yourself as not ready");
+                player.PrintToChat($"{ChatColors.LightBlue}!kill{ChatColors.Default} - Kill yourself");
+                player.PrintToChat($"{ChatColors.LightBlue}!suicide{ChatColors.Default} - Kill yourself");
+                player.PrintToChat($"{ChatColors.LightBlue}!help{ChatColors.Default} - Show this help menu");
+                
+                if (isAdmin)
+                {
+                    player.PrintToChat($"{ChatColors.Red}=== Admin Commands ==={ChatColors.Default}");
+                    player.PrintToChat($"{ChatColors.Orange}!start{ChatColors.Default} - Force start the game");
+                    player.PrintToChat($"{ChatColors.Orange}!stop{ChatColors.Default} - Stop the game and return to warmup");
+                    player.PrintToChat($"{ChatColors.Orange}!edit{ChatColors.Default} - Enter/exit edit mode");
+                    player.PrintToChat($"{ChatColors.Orange}!readyconfig <team|all>{ChatColors.Default} - Configure ready system");
+                    player.PrintToChat($"{ChatColors.Orange}!kill <player>{ChatColors.Default} - Kill a specific player");
+                    player.PrintToChat($"{ChatColors.Orange}!slay <player>{ChatColors.Default} - Kill a specific player");
+                    player.PrintToChat($"{ChatColors.Orange}!configlockpoint{ChatColors.Default} - Configure server for Lockpoint");
+                    
+                    player.PrintToChat($"{ChatColors.Purple}=== Zone Commands (Edit Mode Only) ==={ChatColors.Default}");
+                    player.PrintToChat($"{ChatColors.Magenta}!addzone <name>{ChatColors.Default} - Start creating a new zone");
+                    player.PrintToChat($"{ChatColors.Magenta}!addpoint{ChatColors.Default} - Add a point to current zone");
+                    player.PrintToChat($"{ChatColors.Magenta}!lastpoint{ChatColors.Default} - Add final point and finish zone area");
+                    player.PrintToChat($"{ChatColors.Magenta}!endzone{ChatColors.Default} - Save the current zone");
+                    player.PrintToChat($"{ChatColors.Magenta}!editzone [name]{ChatColors.Default} - Edit existing zone (closest or by name)");
+                    player.PrintToChat($"{ChatColors.Magenta}!removezone [name]{ChatColors.Default} - Remove zone (closest or by name)");
+                    player.PrintToChat($"{ChatColors.Magenta}!cancelzone{ChatColors.Default} - Cancel current zone editing");
+                    
+                    player.PrintToChat($"{ChatColors.DarkBlue}=== Spawn Commands (Edit Mode Only) ==={ChatColors.Default}");
+                    player.PrintToChat($"{ChatColors.Blue}!addspawn <ct|t>{ChatColors.Default} - Add spawn point to current zone");
+                    player.PrintToChat($"{ChatColors.Blue}!removespawn{ChatColors.Default} - Remove closest spawn point");
+                    player.PrintToChat($"{ChatColors.Blue}!clearspawns{ChatColors.Default} - Clear all spawns from closest zone");
+                    player.PrintToChat($"{ChatColors.Blue}!testspawn{ChatColors.Default} - Test spawn points for current zone");
+                    player.PrintToChat($"{ChatColors.Blue}!spawninfo{ChatColors.Default} - Show spawn info for current zone");
+                }
+                else
+                {
+                    player.PrintToChat($"{ChatColors.Grey}Admin commands hidden - you need @css/root permission{ChatColors.Default}");
+                }
+            }
+            else
+            {
+                // Send to server console
+                Server.PrintToConsole("[Lockpoint Commands]");
+                Server.PrintToConsole("=== Player Commands ===");
+                Server.PrintToConsole("css_ready - Mark yourself as ready to start");
+                Server.PrintToConsole("css_unready - Mark yourself as not ready");
+                Server.PrintToConsole("css_kill - Kill yourself");
+                Server.PrintToConsole("css_suicide - Kill yourself");
+                Server.PrintToConsole("css_help - Show this help menu");
+                
+                Server.PrintToConsole("=== Admin Commands ===");
+                Server.PrintToConsole("css_start - Force start the game");
+                Server.PrintToConsole("css_stop - Stop the game and return to warmup");
+                Server.PrintToConsole("css_edit - Enter/exit edit mode");
+                Server.PrintToConsole("css_readyconfig <team|all> - Configure ready system");
+                Server.PrintToConsole("css_kill <player> - Kill a specific player");
+                Server.PrintToConsole("css_slay <player> - Kill a specific player");
+                Server.PrintToConsole("css_configlockpoint - Configure server for Lockpoint");
+                
+                Server.PrintToConsole("=== Zone Commands (Edit Mode Only) ===");
+                Server.PrintToConsole("css_addzone <name> - Start creating a new zone");
+                Server.PrintToConsole("css_addpoint - Add a point to current zone");
+                Server.PrintToConsole("css_lastpoint - Add final point and finish zone area");
+                Server.PrintToConsole("css_endzone - Save the current zone");
+                Server.PrintToConsole("css_editzone [name] - Edit existing zone (closest or by name)");
+                Server.PrintToConsole("css_removezone [name] - Remove zone (closest or by name)");
+                Server.PrintToConsole("css_cancelzone - Cancel current zone editing");
+                
+                Server.PrintToConsole("=== Spawn Commands (Edit Mode Only) ===");
+                Server.PrintToConsole("css_addspawn <ct|t> - Add spawn point to current zone");
+                Server.PrintToConsole("css_removespawn - Remove closest spawn point");
+                Server.PrintToConsole("css_clearspawns - Clear all spawns from closest zone");
+                Server.PrintToConsole("css_testspawn - Test spawn points for current zone");
+                Server.PrintToConsole("css_spawninfo - Show spawn info for current zone");
+            }
+        }
+
+        [ConsoleCommand("css_commands", "Alias for help command.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        public void OnCommandCommands(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            OnCommandHelp(player, commandInfo);
+        }
+
+        [ConsoleCommand("css_quickhelp", "Show context-sensitive help.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        public void OnCommandQuickHelp(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (player?.IsValid != true) return;
+            
+            var isAdmin = AdminManager.PlayerHasPermissions(player, "@css/root");
+            
+            if (_gamePhase == GamePhase.Warmup)
+            {
+                player.PrintToChat($"{ChatColors.Green}[Warmup Phase]{ChatColors.Default} Use {ChatColors.Yellow}!ready{ChatColors.Default} to start the game");
+                if (isAdmin)
+                {
+                    player.PrintToChat($"Admin: {ChatColors.Orange}!start{ChatColors.Default} to force start, {ChatColors.Orange}!edit{ChatColors.Default} for zone editing");
+                }
+            }
+            else if (_gamePhase == GamePhase.EditMode)
+            {
+                if (isAdmin)
+                {
+                    if (_zoneBeingEdited != null)
+                    {
+                        player.PrintToChat($"{ChatColors.Purple}[Editing Zone]{ChatColors.Default} {ChatColors.Magenta}!addspawn <ct|t>{ChatColors.Default} or {ChatColors.Magenta}!endzone{ChatColors.Default} to save");
+                    }
+                    else
+                    {
+                        player.PrintToChat($"{ChatColors.Purple}[Edit Mode]{ChatColors.Default} {ChatColors.Magenta}!addzone <name>{ChatColors.Default} or {ChatColors.Magenta}!editzone{ChatColors.Default}");
+                    }
+                }
+                else
+                {
+                    player.PrintToChat($"{ChatColors.Purple}[Edit Mode]{ChatColors.Default} Admin is editing zones");
+                }
+            }
+            else if (_gamePhase == GamePhase.Active)
+            {
+                if (activeZone != null)
+                {
+                    player.PrintToChat($"{ChatColors.Green}[Active Game]{ChatColors.Default} Capture zone: {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}");
+                }
+                if (isAdmin)
+                {
+                    player.PrintToChat($"Admin: {ChatColors.Orange}!stop{ChatColors.Default} to end game");
+                }
+            }
+            
+            player.PrintToChat($"Use {ChatColors.LightBlue}!help{ChatColors.Default} for all commands");
         }
 
         #endregion
