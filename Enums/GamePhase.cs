@@ -2,9 +2,8 @@ namespace HardpointCS2.Enums
 {
     public enum GamePhase
     {
-        Waiting,
-        Capturing,
-        BombPlanted,
+        Warmup,
+        Active,
         Ended
     }
 }

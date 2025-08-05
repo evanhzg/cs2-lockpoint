@@ -7,6 +7,7 @@ using CounterStrikeSharp.API;
 using Microsoft.Extensions.Logging;
 using HardpointCS2.Services;
 using HardpointCS2.Models;
+using HardpointCS2.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using CSVector = CounterStrikeSharp.API.Modules.Utils.Vector;
@@ -25,6 +26,12 @@ namespace HardpointCS2
         private readonly Dictionary<CCSPlayerController, Zone> _activeZones = new();
         private System.Timers.Timer? _zoneCheckTimer;
         private Zone? activeZone;
+
+        private GamePhase _gamePhase = GamePhase.Warmup;
+        private readonly HashSet<CCSPlayerController> _readyPlayers = new();
+        private bool _requireTeamReady = true; // Configurable: true = one per team, false = all players
+        private DateTime _lastReadyMessage = DateTime.MinValue;
+        private readonly double _readyMessageInterval = 10.0; // 10 seconds
 
         private float _ctZoneTime = 0f;
         private float _tZoneTime = 0f;
@@ -63,27 +70,29 @@ namespace HardpointCS2
         {
             Server.NextFrame(() =>
             {
-                if (activeZone == null) return;
-
                 try
                 {
+                    // Always update HUD regardless of phase
+                    UpdateHardpointHUD();
+
+                    // Only process zone capture logic during active phase
+                    if (_gamePhase != GamePhase.Active || activeZone == null)
+                        return;
+
                     var zoneState = activeZone.GetZoneState();
-                    var previousCtTime = _ctZoneTime;
-                    var previousTTime = _tZoneTime;
 
                     switch (zoneState)
                     {
                         case ZoneState.CTControlled:
-                            _ctZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                            _ctZoneTime += TIMER_INTERVAL / 1000f;
                             break;
                         
                         case ZoneState.TControlled:
-                            _tZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                            _tZoneTime += TIMER_INTERVAL / 1000f;
                             break;
                         
                         case ZoneState.Contested:
                         case ZoneState.Neutral:
-                            // Timers are paused
                             break;
                     }
 
@@ -104,9 +113,6 @@ namespace HardpointCS2
                         Server.PrintToChatAll($"{ChatColors.Red}★ Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}! Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
                         ResetZoneAndSelectNew();
                     }
-
-                    // Update HUD more frequently - every 5 timer ticks (500ms)
-                    UpdateHardpointHUD();
                 }
                 catch (Exception ex)
                 {
@@ -143,6 +149,12 @@ namespace HardpointCS2
 
         private void UpdateHardpointHUD()
         {
+            if (_gamePhase == GamePhase.Warmup)
+            {
+                UpdateWarmupHUD();
+                return;
+            }
+
             if (activeZone == null && _waitingForNewZone)
             {
                 var remainingTime = Math.Max(0, _newZoneTimer - (DateTime.Now - _zoneResetTime).TotalSeconds);
@@ -183,6 +195,91 @@ namespace HardpointCS2
                 {
                     player.PrintToCenter(statusMessage);
                 }
+            }
+        }
+
+        private void UpdateWarmupHUD()
+        {
+            var activePlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot)
+                .ToList();
+
+            string warmupMessage;
+
+            if (activePlayers.Count < 2)
+            {
+                if (activePlayers.Count == 1)
+                    warmupMessage = "⏳ At least 2 players required to play Hardpoint...";
+                else
+                    warmupMessage = "⏳ Waiting for players to join...";
+            }
+            else if (_requireTeamReady)
+            {
+                var ctPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.CounterTerrorist).ToList();
+                var tPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.Terrorist).ToList();
+                
+                if (ctPlayers.Count == 0 || tPlayers.Count == 0)
+                {
+                    warmupMessage = "⏳ Need players on both teams to start...";
+                }
+                else
+                {
+                    var readyCT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.CounterTerrorist);
+                    var readyT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.Terrorist);
+                    
+                    if (!readyCT && !readyT)
+                        warmupMessage = "Type !ready to start the game";
+                    else if (!readyCT)
+                        warmupMessage = "⏳ Waiting for Counter-Terrorists to ready up";
+                    else if (!readyT)
+                        warmupMessage = "⏳ Waiting for Terrorists to ready up";
+                    else
+                        warmupMessage = "🎮 Starting soon...";
+                }
+            }
+            else
+            {
+                var readyCount = _readyPlayers.Count;
+                var totalCount = activePlayers.Count;
+                if (readyCount == totalCount)
+                    warmupMessage = "🎮 Starting soon...";
+                else
+                    warmupMessage = $"⏳ Waiting for {totalCount - readyCount} players to ready up ({readyCount}/{totalCount})";
+            }
+
+            // Send message to ALL players (including spectators)
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (player?.IsValid == true && 
+                    player.Connected == PlayerConnectedState.PlayerConnected && 
+                    !player.IsBot)
+                {
+                    player.PrintToCenter(warmupMessage);
+                }
+            }
+
+            // Print not ready players every 10 seconds
+            if ((DateTime.Now - _lastReadyMessage).TotalSeconds >= _readyMessageInterval)
+            {
+                PrintNotReadyPlayers(activePlayers);
+                _lastReadyMessage = DateTime.Now;
+            }
+        }
+
+        private void PrintNotReadyPlayers(List<CCSPlayerController> activePlayers)
+        {
+            if (activePlayers.Count < 2)
+                return; // Don't spam about ready status if not enough players
+
+            var notReadyPlayers = activePlayers.Where(p => !_readyPlayers.Contains(p)).ToList();
+
+            if (notReadyPlayers.Count > 0)
+            {
+                var notReadyNames = string.Join(", ", notReadyPlayers.Select(p => p.PlayerName));
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Not ready: {notReadyNames}{ChatColors.Default}");
+                Server.PrintToChatAll($"{ChatColors.Yellow}Type !ready to start the game{ChatColors.Default}");
             }
         }
 
@@ -275,55 +372,63 @@ namespace HardpointCS2
             _zoneCheckTimer?.Stop();
             _hardpointTimer?.Stop();
             
-            // Reset scores and timers for new round
-            _ctScore = 0;
-            _tScore = 0;
-            _ctZoneTime = 0f;
-            _tZoneTime = 0f;
-            _previousZone = null;
-            
-            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
-            UpdateTeamScore(CsTeam.Terrorist, 0);
+            if (_gamePhase == GamePhase.Active)
+            {
+                // Reset scores and timers for new round
+                _ctScore = 0;
+                _tScore = 0;
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
+                _previousZone = null;
+                
+                // Reset team scores in the game
+                UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+                UpdateTeamScore(CsTeam.Terrorist, 0);
+            }
+            else
+            {
+                // In warmup, clear any existing zones
+                _zoneVisualization?.ClearZoneVisualization();
+                activeZone = null;
+            }
     
             AddTimer(3.0f, () =>
             {
                 try
                 {
-                    Server.PrintToConsole($"[HardpointCS2] Round started - cleaning up and redrawing zones");
-                    
-                    // Clear all existing visualizations completely
-                    try
-                    {
-                        _zoneVisualization?.ClearZoneVisualization();
-                    }
-                    catch (Exception ex)
-                    {
-                        Server.PrintToConsole($"[HardpointCS2] Error clearing visualizations: {ex.Message}");
-                    }
-                    
                     // Clear players from all zones
                     foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())
                     {
                         zone.PlayersInZone.Clear();
                     }
                     
-                    // Wait a bit more before redrawing
-                    Server.NextFrame(() =>
+                    if (_gamePhase == GamePhase.Active)
                     {
-                        DrawRandomZone();
-                        
-                        // Restart zone checking
-                        _zoneCheckTimer?.Start();
+                        Server.NextFrame(() =>
+                        {
+                            DrawRandomZone();
+                            
+                            // Restart timers only if game is active
+                            _zoneCheckTimer?.Start();
+                            _hardpointTimer?.Start();
+                            
+                            Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint round started!{ChatColors.Default}");
+                        });
+                    }
+                    else
+                    {
+                        // In warmup, only start the HUD timer for warmup messages
                         _hardpointTimer?.Start();
-
-                        Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint match started! {ChatColors.Yellow}First to capture wins!{ChatColors.Default}");
-                    });
+                        Server.PrintToChatAll($"{ChatColors.Yellow}⏳ Warmup phase - Type !ready to start{ChatColors.Default}");
+                    }
                 }
                 catch (Exception ex)
                 {
                     Server.PrintToConsole($"[HardpointCS2] Error in OnRoundStart: {ex.Message}");
-                    // Make sure to restart the timer even if there's an error
-                    _zoneCheckTimer?.Start();
+                    if (_gamePhase == GamePhase.Active)
+                    {
+                        _zoneCheckTimer?.Start();
+                    }
                     _hardpointTimer?.Start();
                 }
             });
@@ -472,6 +577,71 @@ namespace HardpointCS2
                     Server.PrintToConsole($"[HardpointCS2] Error in CheckPlayerZones: {ex.Message}");
                 }
             });
+        }
+
+        private void CheckReadyStatus()
+        {
+            var activePlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && 
+                        p.Connected == PlayerConnectedState.PlayerConnected && 
+                        !p.IsBot)
+                .ToList();
+
+            if (activePlayers.Count < 2)
+            {
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Need at least 2 players to start!{ChatColors.Default}");
+                return;
+            }
+
+            bool canStart = false;
+
+            if (_requireTeamReady)
+            {
+                // Check if at least one player from each team is ready
+                var readyCT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.CounterTerrorist);
+                var readyT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.Terrorist);
+                
+                var ctPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.CounterTerrorist).ToList();
+                var tPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.Terrorist).ToList();
+                
+                canStart = readyCT && readyT && ctPlayers.Count > 0 && tPlayers.Count > 0;
+            }
+            else
+            {
+                // Check if all players are ready
+                canStart = activePlayers.All(p => _readyPlayers.Contains(p));
+            }
+
+            if (canStart)
+            {
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}All players ready! Starting game in 3 seconds...{ChatColors.Default}");
+                AddTimer(3.0f, StartGame);
+            }
+        }
+
+        private void StartGame()
+        {
+            _gamePhase = GamePhase.Active;
+            _readyPlayers.Clear();
+            
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}🎮 GAME STARTED! 🎮{ChatColors.Default}");
+            
+            // Reset scores
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            _previousZone = null;
+            
+            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+            UpdateTeamScore(CsTeam.Terrorist, 0);
+            
+            // Start the first zone
+            DrawRandomZone();
+            
+            // Start timers
+            _zoneCheckTimer?.Start();
+            _hardpointTimer?.Start();
         }
         
         #region Commands
@@ -812,6 +982,130 @@ namespace HardpointCS2
             commandInfo.ReplyToCommand($"T Time: {_tZoneTime:F1}s / {CAPTURE_TIME}s");
             commandInfo.ReplyToCommand($"Score: CT {_ctScore} - T {_tScore}");
             commandInfo.ReplyToCommand($"Players in zone: {activeZone.PlayersInZone.Count}");
+        }
+
+        [ConsoleCommand("css_ready", "Mark yourself as ready to start the game.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        public void OnCommandReady(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (player == null || !player.IsValid)
+                return;
+
+            if (_gamePhase != GamePhase.Warmup)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Game is already in progress!{ChatColors.Default}");
+                return;
+            }
+
+            if (_readyPlayers.Contains(player))
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}You are already ready!{ChatColors.Default}");
+                return;
+            }
+
+            _readyPlayers.Add(player);
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.LightBlue}{player.PlayerName}{ChatColors.Default} is ready!");
+            
+            CheckReadyStatus();
+        }
+
+        [ConsoleCommand("css_unready", "Mark yourself as not ready.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        public void OnCommandUnready(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (player == null || !player.IsValid)
+                return;
+
+            if (_gamePhase != GamePhase.Warmup)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Game is already in progress!{ChatColors.Default}");
+                return;
+            }
+
+            if (_readyPlayers.Remove(player))
+            {
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}{player.PlayerName}{ChatColors.Default} is no longer ready!");
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}You are no longer ready.{ChatColors.Default}");
+            }
+            else
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You were not ready!{ChatColors.Default}");
+            }
+        }
+
+        [ConsoleCommand("css_start", "Force start the game (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandStart(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (_gamePhase != GamePhase.Warmup)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Game is already in progress!{ChatColors.Default}");
+                return;
+            }
+
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Yellow}Admin forced game start!{ChatColors.Default}");
+            StartGame();
+        }
+
+        [ConsoleCommand("css_stop", "Stop the game and return to warmup (Admin only).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandStop(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (_gamePhase == GamePhase.Warmup)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}Game is already in warmup phase!{ChatColors.Default}");
+                return;
+            }
+
+            _gamePhase = GamePhase.Warmup;
+            _readyPlayers.Clear();
+            
+            // Stop timers and clear zones
+            _zoneCheckTimer?.Stop();
+            _hardpointTimer?.Stop();
+            _zoneVisualization?.ClearZoneVisualization();
+            activeZone = null;
+            
+            // Reset scores
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            _previousZone = null;
+            
+            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+            UpdateTeamScore(CsTeam.Terrorist, 0);
+            
+            // Restart HUD timer for warmup messages
+            _hardpointTimer?.Start();
+            
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - {ChatColors.Red}Game stopped by admin! Back to warmup.{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Yellow}⏳ Type !ready to start the game{ChatColors.Default}");
+        }
+
+        [ConsoleCommand("css_readyconfig", "Configure ready system (Admin only). Usage: css_readyconfig <team|all>")]
+        [CommandHelper(minArgs: 1, usage: "<team|all>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandReadyConfig(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var mode = commandInfo.GetArg(1).ToLower();
+            
+            if (mode == "team")
+            {
+                _requireTeamReady = true;
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}One player per team{ChatColors.Default}");
+            }
+            else if (mode == "all")
+            {
+                _requireTeamReady = false;
+                Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - Ready mode set to: {ChatColors.Yellow}All players{ChatColors.Default}");
+            }
+            else
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Usage: css_readyconfig <team|all>{ChatColors.Default}");
+            }
         }
         #endregion
     }
