@@ -26,6 +26,20 @@ namespace HardpointCS2
         private System.Timers.Timer? _zoneCheckTimer;
         private Zone? activeZone;
 
+        private float _ctZoneTime = 0f;
+        private float _tZoneTime = 0f;
+        private int _ctScore = 0;
+        private int _tScore = 0;
+        private System.Timers.Timer? _hardpointTimer;
+        private Zone? _previousZone = null;
+        private readonly float CAPTURE_TIME = 10f; // 10 seconds to capture
+        private readonly float TIMER_INTERVAL = 100f; // 100ms updates
+        private bool _waitingForNewZone = false;
+        private DateTime _zoneResetTime;
+        private string _lastCaptureTeam = "";
+        private readonly double _newZoneTimer = 5.0; // 5 seconds
+        
+
         public override void Load(bool hotReload)
         {
             Logger.LogInformation("HardpointCS2 plugin loaded");
@@ -35,9 +49,208 @@ namespace HardpointCS2
             RegisterListener<Listeners.OnMapStart>(OnMapStart);
             RegisterEventHandler<EventRoundStart>(OnRoundStart);
 
-            _zoneCheckTimer = new System.Timers.Timer(500);
+            _zoneCheckTimer = new System.Timers.Timer(50);
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
             _zoneCheckTimer.Start();
+
+            // Initialize hardpoint timer
+            _hardpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
+            _hardpointTimer.Elapsed += UpdateHardpointTimer;
+            _hardpointTimer.Start();
+        }
+
+        private void UpdateHardpointTimer(object? sender, System.Timers.ElapsedEventArgs e)
+        {
+            Server.NextFrame(() =>
+            {
+                if (activeZone == null) return;
+
+                try
+                {
+                    var zoneState = activeZone.GetZoneState();
+                    var previousCtTime = _ctZoneTime;
+                    var previousTTime = _tZoneTime;
+
+                    switch (zoneState)
+                    {
+                        case ZoneState.CTControlled:
+                            _ctZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                            break;
+                        
+                        case ZoneState.TControlled:
+                            _tZoneTime += TIMER_INTERVAL / 1000f; // Convert to seconds
+                            break;
+                        
+                        case ZoneState.Contested:
+                        case ZoneState.Neutral:
+                            // Timers are paused
+                            break;
+                    }
+
+                    // Check for capture completion
+                    if (_ctZoneTime >= CAPTURE_TIME)
+                    {
+                        _ctScore++;
+                        _lastCaptureTeam = "Counter-Terrorists";
+                        UpdateTeamScore(CsTeam.CounterTerrorist, _ctScore);
+                        Server.PrintToChatAll($"★ Counter-Terrorists captured {activeZone.Name}! Score: CT {_ctScore} - T {_tScore}");
+                        ResetZoneAndSelectNew();
+                    }
+                    else if (_tZoneTime >= CAPTURE_TIME)
+                    {
+                        _tScore++;
+                        _lastCaptureTeam = "Terrorists";
+                        UpdateTeamScore(CsTeam.Terrorist, _tScore);
+                        Server.PrintToChatAll($"★ Terrorists captured {activeZone.Name}! Score: CT {_ctScore} - T {_tScore}");
+                        ResetZoneAndSelectNew();
+                    }
+
+                    // Update HUD more frequently - every 5 timer ticks (500ms)
+                    UpdateHardpointHUD();
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole($"[HardpointCS2] Error in UpdateHardpointTimer: {ex.Message}");
+                }
+            });
+        }
+
+        private void UpdateTeamScore(CsTeam team, int newScore)
+        {
+            try
+            {
+                // Find the team entity and update the score
+                var teamEntities = Utilities.FindAllEntitiesByDesignerName<CCSTeam>("cs_team_manager");
+                
+                foreach (var teamEntity in teamEntities)
+                {
+                    if (teamEntity?.TeamNum == (int)team)
+                    {
+                        teamEntity.Score = newScore;
+                        Server.PrintToConsole($"[HardpointCS2] Updated {team} score to {newScore}");
+                        
+                        // Force a scoreboard update
+                        Utilities.SetStateChanged(teamEntity, "CCSTeam", "m_iScore");
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[HardpointCS2] Error updating team score: {ex.Message}");
+            }
+        }
+
+        private void UpdateHardpointHUD()
+        {
+            if (activeZone == null && _waitingForNewZone)
+            {
+                var remainingTime = Math.Max(0, _newZoneTimer - (DateTime.Now - _zoneResetTime).TotalSeconds);
+                string waitMessage = $"🏆 {_lastCaptureTeam} scored! New zone in {remainingTime:F0}s...";
+                
+                foreach (var player in Utilities.GetPlayers())
+                {
+                    if (player?.IsValid == true && 
+                        player.Connected == PlayerConnectedState.PlayerConnected && 
+                        !player.IsBot)
+                    {
+                        player.PrintToCenter(waitMessage);
+                    }
+                }
+                return;
+            }
+            if (activeZone == null) return;
+
+            var zoneState = activeZone.GetZoneState();
+            var ctProgress = (_ctZoneTime / CAPTURE_TIME * 100f);
+            var tProgress = (_tZoneTime / CAPTURE_TIME * 100f);
+
+            string statusMessage = zoneState switch
+            {
+                ZoneState.CTControlled => $"🔵 CTs controlling {activeZone.Name} - Progress: {ctProgress:F0}%",
+                ZoneState.TControlled => $"🔴 Ts controlling {activeZone.Name} - Progress: {tProgress:F0}%",
+                ZoneState.Contested => $"⚪ {activeZone.Name} CONTESTED - Timers paused | CT: {ctProgress:F0}% | T: {tProgress:F0}%",
+                ZoneState.Neutral => GetNeutralMessage(activeZone.Name, ctProgress, tProgress),
+                _ => $"⚪ {activeZone.Name} - Status unknown"
+            };
+
+            // Print to center of screen for ALL players (not just those in zone)
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (player?.IsValid == true && 
+                    player.Connected == PlayerConnectedState.PlayerConnected && 
+                    !player.IsBot)
+                {
+                    player.PrintToCenter(statusMessage);
+                }
+            }
+        }
+
+        private string GetNeutralMessage(string zoneName, float ctProgress, float tProgress)
+        {
+            if (ctProgress == 0 && tProgress == 0)
+                return $"⚪ {zoneName} neutral - No progress";
+            else
+                return $"⚪ {zoneName} neutral - CT: {ctProgress:F0}% | T: {tProgress:F0}%";
+        }
+
+       private void ResetZoneAndSelectNew()
+        {
+            if (activeZone == null) return;
+
+            _previousZone = activeZone;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+
+            // Clear current zone visualization
+            _zoneVisualization?.ClearZoneVisualization();
+            
+            // Set waiting state
+            _waitingForNewZone = true;
+            _zoneResetTime = DateTime.Now;
+            
+            activeZone = null; // Clear active zone immediately
+            
+            // Announce zone cleared and wait period
+            Server.PrintToChatAll($"🔴 Zone cleared! Score: CT {_ctScore} - T {_tScore}");
+            Server.PrintToChatAll($"⏱ New zone in 5 seconds...");
+            
+            // Wait 5 seconds before selecting new zone
+            AddTimer(5.0f, () =>
+            {
+                _waitingForNewZone = false;
+                SelectNewZone();
+                if (activeZone != null)
+                {
+                    Server.PrintToChatAll($"🎯 New Hardpoint: {activeZone.Name}");
+                }
+            });
+        }
+
+        private void SelectNewZone()
+        {
+            if (_zoneManager?.Zones.Count <= 1)
+            {
+                Server.PrintToChatAll("⚠ Not enough zones available for rotation!");
+                return;
+            }
+
+            var availableZones = _zoneManager.Zones.Where(z => z != _previousZone).ToList();
+            
+            if (availableZones.Count == 0)
+            {
+                // Fallback: use any zone if filtering failed
+                availableZones = _zoneManager.Zones.ToList();
+            }
+
+            var random = new Random();
+            var newZone = availableZones[random.Next(availableZones.Count)];
+            
+            activeZone = newZone;
+            _zoneVisualization?.DrawZone(activeZone);
+            
+            Server.PrintToChatAll($"🎯 New Hardpoint: {activeZone.Name}");
+            Server.PrintToConsole($"[HardpointCS2] New zone selected: {activeZone.Name}");
         }
 
         private void OnMapStart(string mapName)
@@ -56,8 +269,20 @@ namespace HardpointCS2
         private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
         {
             // Stop zone checking during round transition
+            // Stop timers during round transition
             _zoneCheckTimer?.Stop();
+            _hardpointTimer?.Stop();
             
+            // Reset scores and timers for new round
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            _previousZone = null;
+            
+            UpdateTeamScore(CsTeam.CounterTerrorist, 0);
+            UpdateTeamScore(CsTeam.Terrorist, 0);
+    
             AddTimer(3.0f, () =>
             {
                 try
@@ -87,6 +312,9 @@ namespace HardpointCS2
                         
                         // Restart zone checking
                         _zoneCheckTimer?.Start();
+                        _hardpointTimer?.Start();
+
+                        Server.PrintToChatAll("🎮 Hardpoint match started! First to capture wins!");
                     });
                 }
                 catch (Exception ex)
@@ -94,6 +322,7 @@ namespace HardpointCS2
                     Server.PrintToConsole($"[HardpointCS2] Error in OnRoundStart: {ex.Message}");
                     // Make sure to restart the timer even if there's an error
                     _zoneCheckTimer?.Start();
+                    _hardpointTimer?.Start();
                 }
             });
             
@@ -142,6 +371,8 @@ namespace HardpointCS2
                 Server.PrintToConsole($"[HardpointCS2] Drew random zone: {randomZone.Name}");
                 Server.PrintToChatAll($"[HardpointCS2] Active Zone: {randomZone.Name}");
                 activeZone = randomZone;
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
             }
             else
             {
@@ -154,6 +385,8 @@ namespace HardpointCS2
         {
             _zoneCheckTimer?.Stop();
             _zoneCheckTimer?.Dispose();
+            _hardpointTimer?.Stop();
+            _hardpointTimer?.Dispose();
             _zoneVisualization?.ClearZoneVisualization();
             Logger.LogInformation("HardpointCS2 plugin unloaded");
         }
@@ -168,8 +401,10 @@ namespace HardpointCS2
                     if (activeZone != null)
                     {
                         var previousState = activeZone.GetZoneState();
+                        var previousPlayers = new List<CCSPlayerController>(activeZone.PlayersInZone);
+                        var previousPlayerCount = previousPlayers.Count; // Add this line
                         
-                        // Clear and rebuild the players list with only valid players
+                        // Clear and rebuild the players list
                         activeZone.PlayersInZone.Clear();
 
                         foreach (var player in Utilities.GetPlayers())
@@ -188,17 +423,39 @@ namespace HardpointCS2
                                 if (activeZone.IsPlayerInZone(playerPos))
                                 {
                                     activeZone.PlayersInZone.Add(player);
+                                    
+                                    // Check if this player just entered
+                                    if (!previousPlayers.Contains(player))
+                                    {
+                                        Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} entered zone {activeZone.Name}");
+                                    }
+                                }
+                                else
+                                {
+                                    // Check if this player just left
+                                    if (previousPlayers.Contains(player))
+                                    {
+                                        Server.PrintToConsole($"[HardpointCS2] Player {player.PlayerName} left zone {activeZone.Name}");
+                                    }
                                 }
                             }
                         }
 
-                        // Only update zone color if state changed
                         var currentState = activeZone.GetZoneState();
-                        if (currentState != previousState)
+                        var currentPlayerCount = activeZone.PlayersInZone.Count;
+
+                        // Update zone color if state changed OR if player count changed
+                        if (currentState != previousState || 
+                            currentPlayerCount != previousPlayerCount)
                         {
                             try
                             {
                                 _zoneVisualization?.UpdateZoneColor(activeZone);
+                                
+                                if (currentState != previousState)
+                                {
+                                    Server.PrintToConsole($"[HardpointCS2] Zone {activeZone.Name} state changed: {previousState} -> {currentState}");
+                                }
                             }
                             catch (Exception ex)
                             {
@@ -213,8 +470,8 @@ namespace HardpointCS2
                 }
             });
         }
-
-    #region Commands
+        
+        #region Commands
 
         [ConsoleCommand("css_savezones", "Saves all zones to file.")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
@@ -532,6 +789,26 @@ namespace HardpointCS2
             _zoneVisualization?.ClearZoneVisualization();
             commandInfo.ReplyToCommand("Cleared active zone - no zones are now active");
             Server.PrintToConsole("[HardpointCS2] Cleared active zone");
+        }
+
+        [ConsoleCommand("css_hardpointstatus", "Shows current hardpoint status.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandHardpointStatus(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (activeZone == null)
+            {
+                commandInfo.ReplyToCommand("No active zone");
+                return;
+            }
+
+            var zoneState = activeZone.GetZoneState();
+            commandInfo.ReplyToCommand($"Zone: {activeZone.Name}");
+            commandInfo.ReplyToCommand($"State: {zoneState}");
+            commandInfo.ReplyToCommand($"CT Time: {_ctZoneTime:F1}s / {CAPTURE_TIME}s");
+            commandInfo.ReplyToCommand($"T Time: {_tZoneTime:F1}s / {CAPTURE_TIME}s");
+            commandInfo.ReplyToCommand($"Score: CT {_ctScore} - T {_tScore}");
+            commandInfo.ReplyToCommand($"Players in zone: {activeZone.PlayersInZone.Count}");
         }
         #endregion
     }

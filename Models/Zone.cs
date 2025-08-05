@@ -56,7 +56,7 @@ namespace HardpointCS2.Models
                 {
                     try
                     {
-                        if (player?.IsValid == true && player.TeamNum != null)
+                        if (player?.IsValid == true && player.TeamNum > 0) // Fix: Remove null check on int
                         {
                             if (player.TeamNum == (byte)CsTeam.CounterTerrorist)
                                 ctCount++;
