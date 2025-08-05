@@ -12,6 +12,12 @@ namespace Lockpoint.Models
         
         [JsonPropertyName("points")]
         public List<SerializableVector> Points { get; set; } = new();
+
+        [JsonPropertyName("t_spawns")]
+        public List<SerializableVector> TerroristSpawns { get; set; } = new List<SerializableVector>();
+        [JsonPropertyName("ct_spawns")]
+        public List<SerializableVector> CounterTerroristSpawns { get; set; } = new List<SerializableVector>();
+
     }
 
     public class SerializableVector

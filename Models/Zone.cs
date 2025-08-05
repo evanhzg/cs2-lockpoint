@@ -11,11 +11,15 @@ namespace Lockpoint.Models
     {
         public string Name { get; set; } = "";
         public List<CSVector> Points { get; set; } = new();
+        public List<CCSPlayerController> PlayersInZone { get; set; } = new();
+
+        public List<CSVector> TerroristSpawns { get; set; } = new List<CSVector>();
+        public List<CSVector> CounterTerroristSpawns { get; set; } = new List<CSVector>();
+
         public CSVector Center { get; set; } = new();
         public int ControllingTeam { get; set; } = -1;
         public float CaptureProgressTeam1 { get; set; } = 0;
         public float CaptureProgressTeam2 { get; set; } = 0;
-        public List<CCSPlayerController> PlayersInZone { get; set; } = new();
 
         public bool IsPlayerInZone(CSVector playerPos)
         {

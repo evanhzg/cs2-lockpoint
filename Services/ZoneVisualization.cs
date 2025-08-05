@@ -12,6 +12,9 @@ namespace Lockpoint.Services
     public class ZoneVisualization
     {
         private Dictionary<Zone, List<CBeam>> zoneBeams = new();
+        private readonly List<CBeam> beams = new();
+        private readonly List<CBeam> spawnBeams = new();
+        private Zone? _currentSpawnZone = null;
 
         public void DrawZone(Zone zone)
         {
@@ -201,27 +204,133 @@ namespace Lockpoint.Services
             }
         }
 
+        public void DrawSpawnPoints(Zone zone)
+        {
+            if (zone == null) return;
+
+            // Clear existing spawn visualizations first
+            ClearSpawnPoints();
+            
+            _currentSpawnZone = zone;
+
+            // Draw CT spawns (blue crosses)
+            foreach (var spawn in zone.CounterTerroristSpawns)
+            {
+                DrawSpawnMarker(spawn, Color.Blue);
+            }
+
+            // Draw T spawns (red crosses)
+            foreach (var spawn in zone.TerroristSpawns)
+            {
+                DrawSpawnMarker(spawn, Color.Red);
+            }
+
+            Server.PrintToConsole($"[ZoneVisualization] Drew {zone.CounterTerroristSpawns.Count} CT and {zone.TerroristSpawns.Count} T spawn points for zone '{zone.Name}'");
+        }
+
+        public void ClearSpawnPoints(Zone? specificZone = null)
+        {
+            // If specific zone provided, only clear if it matches current
+            if (specificZone != null && _currentSpawnZone != specificZone)
+                return;
+
+            try
+            {
+                foreach (var beam in spawnBeams)
+                {
+                    if (beam?.IsValid == true)
+                    {
+                        beam.Remove();
+                    }
+                }
+                spawnBeams.Clear();
+                _currentSpawnZone = null;
+                
+                Server.PrintToConsole("[ZoneVisualization] Cleared spawn point visualizations");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error clearing spawn beams: {ex.Message}");
+            }
+        }
+
+        private void DrawSpawnMarker(CSVector position, Color color)
+        {
+            // Create a cross marker on the ground
+            var size = 15.0f;
+            
+            // Horizontal line
+            var start1 = new Vector(position.X - size, position.Y, position.Z + 1);
+            var end1 = new Vector(position.X + size, position.Y, position.Z + 1);
+            
+            // Vertical line  
+            var start2 = new Vector(position.X, position.Y - size, position.Z + 1);
+            var end2 = new Vector(position.X, position.Y + size, position.Z + 1);
+            
+            // Vertical marker
+            var verticalStart = new Vector(position.X, position.Y, position.Z);
+            var verticalEnd = new Vector(position.X, position.Y, position.Z + 30);
+            
+            // Draw the cross
+            DrawSpawnBeam(start1, end1, color);
+            DrawSpawnBeam(start2, end2, color);
+            DrawSpawnBeam(verticalStart, verticalEnd, color);
+        }
+
+        private void DrawSpawnBeam(Vector start, Vector end, Color color)
+        {
+            try
+            {
+                var beam = Utilities.CreateEntityByName<CBeam>("beam");
+                if (beam == null) return;
+
+                beam.StartFrame = 0;
+                beam.FrameRate = 0;
+                beam.LifeState = 1;
+                beam.Width = 3;
+                beam.EndWidth = 3;
+                beam.Amplitude = 0;
+                beam.Speed = 0;
+                beam.Flags = 0;
+                beam.BeamType = BeamType_t.BEAM_POINTS;
+                beam.FadeLength = 0;
+                beam.Render = color;
+
+                // Use the same pattern as your existing CreateBorderBeam method
+                beam.EndPos.X = end.X;
+                beam.EndPos.Y = end.Y;
+                beam.EndPos.Z = end.Z;
+
+                beam.Teleport(start, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                
+                beam.DispatchSpawn();
+                spawnBeams.Add(beam);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error creating spawn beam: {ex.Message}");
+            }
+        }
+
         public void ClearZoneVisualization()
         {
-            foreach (var kvp in zoneBeams.ToList()) // Use ToList() to avoid modification during enumeration
+            // Clear all zone beams
+            foreach (var beamList in zoneBeams.Values)
             {
-                foreach (var beam in kvp.Value)
+                foreach (var beam in beamList)
                 {
-                    try
+                    if (beam?.IsValid == true)
                     {
-                        if (beam?.IsValid == true)
-                        {
-                            beam.Remove();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        // Entity might already be removed, just log and continue
-                        Server.PrintToConsole($"[ZoneVisualization] Failed to remove beam: {ex.Message}");
+                        beam.Remove();
                     }
                 }
             }
             zoneBeams.Clear();
+
+            // Also clear spawn points
+            ClearSpawnPoints();
+            
+            Server.PrintToConsole("[ZoneVisualization] Cleared all zone visualizations");
         }
     }
 }

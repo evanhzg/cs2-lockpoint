@@ -95,7 +95,9 @@ namespace Lockpoint.Services
                         var zone = new Zone
                         {
                             Name = zoneDef.Name,
-                            Points = zoneDef.Points.Select(p => p.ToCSVector()).ToList()
+                            Points = zoneDef.Points.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList(),
+                            TerroristSpawns = zoneDef.TerroristSpawns?.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList() ?? new List<CSVector>(),
+                            CounterTerroristSpawns = zoneDef.CounterTerroristSpawns?.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList() ?? new List<CSVector>()
                         };
 
                         // Calculate center
@@ -108,7 +110,7 @@ namespace Lockpoint.Services
                         }
 
                         Zones.Add(zone);
-                        Server.PrintToConsole($"[Lockpoint] Added zone '{zone.Name}' with {zone.Points.Count} points to Zones list");
+                        Server.PrintToConsole($"[Lockpoint] Added/Edited zone '{zone.Name}' with {zone.Points.Count} points, {zone.TerroristSpawns.Count} T spawns, {zone.CounterTerroristSpawns.Count} CT spawns");
                     }
 
                     Server.PrintToConsole($"[Lockpoint] Final Zones count: {Zones.Count}");
@@ -158,7 +160,9 @@ namespace Lockpoint.Services
                     Zones = zonesToSave.Select(zone => new ZoneDefinition
                     {
                         Name = zone.Name,
-                        Points = zone.Points.Select(p => new SerializableVector(p)).ToList()
+                        Points = zone.Points.Select(p => new SerializableVector(p)).ToList(),
+                        TerroristSpawns = zone.TerroristSpawns.Select(p => new SerializableVector(p)).ToList(),
+                        CounterTerroristSpawns = zone.CounterTerroristSpawns.Select(p => new SerializableVector(p)).ToList()
                     }).ToList()
                 };
 
