@@ -123,9 +123,10 @@ Lockpoint is a comprehensive zone-based game mode plugin for Counter-Strike 2 us
 1. **Enter Edit Mode**: `css_editmode`
 2. **Create Zone**: `css_addzone "Zone Name"`
 3. **Add Points**: Stand at desired corners and use `css_addpoint`
-4. **Add Spawns**: Position yourself and use `css_addspawn ct` or `css_addspawn t`
-5. **Save Zone**: `css_savezone`
-6. **Exit Edit Mode**: `css_exitedit`
+4. **Close the zone**: Place the last point to close the zone with `css_lastpoint`
+5. **Add Spawns**: Position yourself and use `css_addspawn ct` or `css_addspawn t`
+6. **Save Zone**: `css_savezone`
+7. **Exit Edit Mode**: `css_exitedit` (or `css_edit`)
 
 ### Zone Requirements
 
@@ -143,13 +144,17 @@ Lockpoint is a comprehensive zone-based game mode plugin for Counter-Strike 2 us
 ## Configuration
 
 The plugin automatically creates a configuration file at:
+
+```php
 addons/counterstrikesharp/plugins/Lockpoint/
 ├── Lockpoint.dll # Main plugin file
-├── cfg/lockpoint.cfg # Server configuration
+└── cfg/
+      └──lockpoint.cfg # Server configuration
 └── zones/ # Zone data directory
-├── de_dust2.json # Zone data for de_dust2
-├── de_mirage.json # Zone data for de_mirage
-└── ... # Additional map zone files
+      ├── de_dust2.json # Zone data for de_dust2
+      ├── de_mirage.json # Zone data for de_mirage
+      └── ... # Additional map zone files
+```
 
 ## Troubleshooting
 
