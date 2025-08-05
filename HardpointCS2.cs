@@ -17,7 +17,7 @@ namespace HardpointCS2
     public class HardpointCS2 : BasePlugin
     {
         public override string ModuleName => "HardpointCS2";
-        public override string ModuleVersion => "0.0.1";
+        public override string ModuleVersion => "0.1.0";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Hardpoint game mode for CS2";
 
