@@ -93,7 +93,7 @@ namespace HardpointCS2
                         _ctScore++;
                         _lastCaptureTeam = "Counter-Terrorists";
                         UpdateTeamScore(CsTeam.CounterTerrorist, _ctScore);
-                        Server.PrintToChatAll($"★ Counter-Terrorists captured {activeZone.Name}! Score: CT {_ctScore} - T {_tScore}");
+                        Server.PrintToChatAll($"{ChatColors.LightBlue}★ Counter-Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}! Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
                         ResetZoneAndSelectNew();
                     }
                     else if (_tZoneTime >= CAPTURE_TIME)
@@ -101,7 +101,7 @@ namespace HardpointCS2
                         _tScore++;
                         _lastCaptureTeam = "Terrorists";
                         UpdateTeamScore(CsTeam.Terrorist, _tScore);
-                        Server.PrintToChatAll($"★ Terrorists captured {activeZone.Name}! Score: CT {_ctScore} - T {_tScore}");
+                        Server.PrintToChatAll($"{ChatColors.Red}★ Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}! Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
                         ResetZoneAndSelectNew();
                     }
 
@@ -212,26 +212,22 @@ namespace HardpointCS2
             activeZone = null; // Clear active zone immediately
             
             // Announce zone cleared and wait period
-            Server.PrintToChatAll($"🔴 Zone cleared! Score: CT {_ctScore} - T {_tScore}");
-            Server.PrintToChatAll($"⏱ New zone in 5 seconds...");
-            
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} -{ChatColors.Orange} Zone cleared!{ChatColors.Default} Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Hardpoint CS2]{ChatColors.Default} - ⏱{ChatColors.Yellow} New zone in 5 seconds...{ChatColors.Default}");
+    
             // Wait 5 seconds before selecting new zone
             AddTimer(5.0f, () =>
             {
                 _waitingForNewZone = false;
                 SelectNewZone();
-                if (activeZone != null)
-                {
-                    Server.PrintToChatAll($"🎯 New Hardpoint: {activeZone.Name}");
-                }
             });
         }
 
         private void SelectNewZone()
         {
-            if (_zoneManager?.Zones.Count <= 1)
+            if (_zoneManager?.Zones == null || _zoneManager.Zones.Count <= 1)
             {
-                Server.PrintToChatAll("⚠ Not enough zones available for rotation!");
+                Server.PrintToChatAll($"{ChatColors.Red}⚠ Not enough zones available for rotation!{ChatColors.Default}");
                 return;
             }
 
@@ -243,13 +239,19 @@ namespace HardpointCS2
                 availableZones = _zoneManager.Zones.ToList();
             }
 
+            if (availableZones.Count == 0)
+            {
+                Server.PrintToChatAll($"{ChatColors.Red}⚠ No zones available!{ChatColors.Default}");
+                return;
+            }
+
             var random = new Random();
             var newZone = availableZones[random.Next(availableZones.Count)];
             
             activeZone = newZone;
             _zoneVisualization?.DrawZone(activeZone);
             
-            Server.PrintToChatAll($"🎯 New Hardpoint: {activeZone.Name}");
+            Server.PrintToChatAll($"{ChatColors.Green}🎯 New Hardpoint: {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}");
             Server.PrintToConsole($"[HardpointCS2] New zone selected: {activeZone.Name}");
         }
 
@@ -314,7 +316,7 @@ namespace HardpointCS2
                         _zoneCheckTimer?.Start();
                         _hardpointTimer?.Start();
 
-                        Server.PrintToChatAll("🎮 Hardpoint match started! First to capture wins!");
+                        Server.PrintToChatAll($"{ChatColors.Green}🎮 Hardpoint match started! {ChatColors.Yellow}First to capture wins!{ChatColors.Default}");
                     });
                 }
                 catch (Exception ex)
@@ -358,7 +360,7 @@ namespace HardpointCS2
         private void DrawRandomZone()
         {
             // Draw a random zone for testing purposes
-            if (_zoneManager?.Zones.Count > 0)
+            if (_zoneManager?.Zones != null && _zoneManager.Zones.Count > 0)
             {
                 // Clear all existing visualizations first
                 _zoneVisualization?.ClearZoneVisualization();
@@ -369,7 +371,7 @@ namespace HardpointCS2
                 // Only draw the selected zone
                 _zoneVisualization?.DrawZone(randomZone);
                 Server.PrintToConsole($"[HardpointCS2] Drew random zone: {randomZone.Name}");
-                Server.PrintToChatAll($"[HardpointCS2] Active Zone: {randomZone.Name}");
+                Server.PrintToChatAll($"{ChatColors.Green}🎯 Active Hardpoint: {ChatColors.Yellow}{randomZone.Name}{ChatColors.Default}");
                 activeZone = randomZone;
                 _ctZoneTime = 0f;
                 _tZoneTime = 0f;
@@ -377,6 +379,7 @@ namespace HardpointCS2
             else
             {
                 Server.PrintToConsole("[HardpointCS2] No zones available to draw");
+                Server.PrintToChatAll($"{ChatColors.Red}⚠ No zones available to draw!{ChatColors.Default}");
                 activeZone = null;
             }
         }
