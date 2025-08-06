@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.7.0";
+        public override string ModuleVersion => "0.7.2";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
 
@@ -88,6 +88,12 @@ namespace Lockpoint
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath); // Add this
             RegisterEventHandler<EventPlayerDisconnect>(OnPlayerDisconnect); // Add this
 
+            if (!string.IsNullOrEmpty(Server.MapName))
+            {
+                Server.PrintToConsole($"[Lockpoint] Loading zones for current map: {Server.MapName}");
+                _zoneManager?.LoadZonesForMap(Server.MapName);
+            }
+
             CreateTimers();
 
             _zoneCheckTimer = new System.Timers.Timer(50);
@@ -103,7 +109,18 @@ namespace Lockpoint
         private void OnMapStart(string mapName)
         {
             Server.PrintToConsole($"[Lockpoint] Map started: {mapName}");
+            Server.PrintToChatAll($"[Lockpoint] Map started: {mapName}");
             
+            _zoneVisualization?.ClearZoneVisualization();
+            activeZone = null;
+            _previousZone = null;
+
+            _gamePhase = GamePhase.Warmup;
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+
             // Execute configuration file after map loads
             AddTimer(1.0f, () =>
             {
@@ -2247,50 +2264,6 @@ namespace Lockpoint
             OnCommandAddPoint(player, commandInfo);
         }
 
-        // [ConsoleCommand("css_lastpoint", "Add the last point and finish the zone area (but don't save yet).")]
-        // [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        // [RequiresPermissions("@css/root")]
-        // public void OnCommandLastPoint(CCSPlayerController? player, CommandInfo commandInfo)
-        // {
-        //     if (!_editMode)
-        //     {
-        //         commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
-        //         return;
-        //     }
-
-        //     if (player?.IsValid != true || player.PlayerPawn?.Value == null)
-        //     {
-        //         commandInfo.ReplyToCommand("Command must be used by a valid player.");
-        //         return;
-        //     }
-
-        //     if (!_activeZones.ContainsKey(player))
-        //     {
-        //         commandInfo.ReplyToCommand("You don't have an active zone. Use css_addzone first.");
-        //         return;
-        //     }
-
-        //     var zone = _activeZones[player];
-        //     var playerPos = new CSVector(
-        //         player.PlayerPawn.Value.AbsOrigin!.X,
-        //         player.PlayerPawn.Value.AbsOrigin!.Y,
-        //         player.PlayerPawn.Value.AbsOrigin!.Z
-        //     );
-
-        //     zone.Points.Add(playerPos);
-            
-        //     // Move to editing state but don't save yet
-        //     _zoneBeingEdited = zone;
-        //     _isEditingExistingZone = false;
-        //     _activeZones.Remove(player);
-
-        //     // Draw the zone for visualization
-        //     _zoneVisualization?.DrawZone(zone);
-            
-        //     commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zone.Name}' area completed with {zone.Points.Count} points. Add spawn points then use css_savezone to save.{ChatColors.Default}");
-        //     Server.PrintToConsole($"[Lockpoint] Zone '{zone.Name}' area finished by {player.PlayerName}");
-        // }
-
         [ConsoleCommand("css_savezone", "Save the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
@@ -3677,7 +3650,6 @@ namespace Lockpoint
                 Server.PrintToConsole("=== Zone Commands (Edit Mode Only) ===");
                 Server.PrintToConsole("css_addzone <name> - Start creating a new zone");
                 Server.PrintToConsole("css_addpoint - Add a point to current zone");
-                Server.PrintToConsole("css_lastpoint - Add final point and finish zone area");
                 Server.PrintToConsole("css_savezone - Save the current zone");
                 Server.PrintToConsole("css_editzone [name] - Edit existing zone (closest or by name)");
                 Server.PrintToConsole("css_removezone [name] - Remove zone (closest or by name)");

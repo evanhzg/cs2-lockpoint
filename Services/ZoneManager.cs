@@ -23,6 +23,7 @@ namespace Lockpoint.Services
         public ZoneManager(string moduleDirectory)
         {
             _zonesDirectory = Path.Join(moduleDirectory, "zones");
+            Zones = new List<Zone>();
             
             Server.PrintToConsole($"[Lockpoint] Module directory: {moduleDirectory}");
             Server.PrintToConsole($"[Lockpoint] Zones directory: {_zonesDirectory}");
@@ -48,87 +49,67 @@ namespace Lockpoint.Services
             SaveZonesForMap(zoneName, Zones);
         }
 
-        public void LoadZonesForMap(string mapName) 
+        public void LoadZonesForMap(string mapName)
         {
-            var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
-            
-            Server.PrintToConsole($"[Lockpoint] LoadZonesForMap called for map: {mapName}");
-            Server.PrintToConsole($"[Lockpoint] Looking for file: {filePath}");
-            Server.PrintToConsole($"[Lockpoint] File exists: {File.Exists(filePath)}");
-            
-            if (!File.Exists(filePath))
-            {
-                Server.PrintToConsole($"[Lockpoint] No zone file found for map {mapName}");
-                
-                // List all files in the directory to see what's there
-                if (Directory.Exists(_zonesDirectory))
-                {
-                    var files = Directory.GetFiles(_zonesDirectory);
-                    Server.PrintToConsole($"[Lockpoint] Files in zones directory: {files.Length}");
-                    foreach (var file in files)
-                    {
-                        Server.PrintToConsole($"[Lockpoint] - {Path.GetFileName(file)}");
-                    }
-                }
-                else
-                {
-                    Server.PrintToConsole($"[Lockpoint] Zones directory doesn't exist: {_zonesDirectory}");
-                }
-                return;
-            }
-
             try
             {
-                var jsonContent = File.ReadAllText(filePath);
-                Server.PrintToConsole($"[Lockpoint] Read JSON content, length: {jsonContent.Length}");
+                Server.PrintToConsole($"[ZoneManager] LoadZonesForMap called for map: {mapName}");
                 
-                var mapData = JsonSerializer.Deserialize<MapZoneData>(jsonContent);
-                Server.PrintToConsole($"[Lockpoint] Deserialized map data, zones: {mapData?.Zones?.Count ?? 0}");
+                // Clear existing zones first
+                Zones.Clear();
                 
-                if (mapData?.Zones != null)
+                var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
+                Server.PrintToConsole($"[ZoneManager] Looking for file: {filePath}");
+                Server.PrintToConsole($"[ZoneManager] File exists: {File.Exists(filePath)}");
+
+                if (!File.Exists(filePath))
                 {
-                    Zones.Clear();
-                    Server.PrintToConsole($"[Lockpoint] Processing {mapData.Zones.Count} zone definitions");
+                    Server.PrintToConsole($"[ZoneManager] No zone file found for map {mapName}");
                     
-                    foreach (var zoneDef in mapData.Zones)
+                    // Debug: Show what files exist
+                    if (Directory.Exists(_zonesDirectory))
                     {
-                        var zone = new Zone
+                        var files = Directory.GetFiles(_zonesDirectory, "*.json");
+                        Server.PrintToConsole($"[ZoneManager] Files in zones directory: {files.Length}");
+                        foreach (var file in files)
                         {
-                            Name = zoneDef.Name,
-                            Points = zoneDef.Points.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList(),
-                            TerroristSpawns = zoneDef.TerroristSpawns?.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList() ?? new List<CSVector>(),
-                            CounterTerroristSpawns = zoneDef.CounterTerroristSpawns?.Select(p => new CSVector(p.X, p.Y, p.Z)).ToList() ?? new List<CSVector>()
-                        };
-
-                        // Calculate center
-                        if (zone.Points.Count > 0)
-                        {
-                            var centerX = zone.Points.Sum(p => p.X) / zone.Points.Count;
-                            var centerY = zone.Points.Sum(p => p.Y) / zone.Points.Count;
-                            var centerZ = zone.Points.Sum(p => p.Z) / zone.Points.Count;
-                            zone.Center = new CSVector(centerX, centerY, centerZ);
+                            Server.PrintToConsole($"[ZoneManager] - {Path.GetFileName(file)}");
                         }
-
-                        Zones.Add(zone);
-                        Server.PrintToConsole($"[Lockpoint] Added/Edited zone '{zone.Name}' with {zone.Points.Count} points, {zone.TerroristSpawns.Count} T spawns, {zone.CounterTerroristSpawns.Count} CT spawns");
                     }
+                    
+                    // IMPORTANT: Return here instead of continuing to load zones
+                    return;
+                }
 
-                    Server.PrintToConsole($"[Lockpoint] Final Zones count: {Zones.Count}");
+                var jsonContent = File.ReadAllText(filePath);
+                if (string.IsNullOrEmpty(jsonContent))
+                {
+                    Server.PrintToConsole($"[ZoneManager] Zone file for {mapName} is empty");
+                    return;
+                }
 
+                var loadedZones = JsonSerializer.Deserialize<List<Zone>>(jsonContent);
+                if (loadedZones != null)
+                {
+                    Zones = loadedZones;
+                    
+                    // Assign IDs after loading
                     for (int i = 0; i < Zones.Count; i++)
                     {
                         Zones[i].Id = i;
                     }
+                    
+                    Server.PrintToConsole($"[ZoneManager] Successfully loaded {Zones.Count} zones for map {mapName}");
                 }
                 else
                 {
-                    Server.PrintToConsole($"[Lockpoint] mapData or mapData.Zones is null");
+                    Server.PrintToConsole($"[ZoneManager] Failed to deserialize zones for map {mapName}");
                 }
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error loading zones for map {mapName}: {ex.Message}");
-                Server.PrintToConsole($"[Lockpoint] Stack trace: {ex.StackTrace}");
+                Server.PrintToConsole($"[ZoneManager] Error loading zones for map {mapName}: {ex.Message}");
+                Zones.Clear(); // Clear zones on error
             }
         }
 
