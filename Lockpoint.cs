@@ -2401,14 +2401,14 @@ namespace Lockpoint
             commandInfo.ReplyToCommand($"{ChatColors.Yellow}Cancelled editing zone '{zoneName}'.{ChatColors.Default}");
         }
 
-        [ConsoleCommand("css_addspawn", "Add a spawn point to the current zone being edited.")]
-        [CommandHelper(minArgs: 1, usage: "<ct|t>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [ConsoleCommand("css_ct", "Add a CT spawn point to the current zone being edited.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandAddSpawn(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandCT(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
@@ -2424,34 +2424,29 @@ namespace Lockpoint
                 return;
             }
 
-            var teamArg = commandInfo.GetArg(1).ToLower();
-            if (teamArg != "ct" && teamArg != "t")
-            {
-                commandInfo.ReplyToCommand("Usage: css_addspawn <ct|t>");
-                return;
-            }
-
             var playerPos = new CSVector(
                 player.PlayerPawn.Value.AbsOrigin!.X,
                 player.PlayerPawn.Value.AbsOrigin!.Y,
                 player.PlayerPawn.Value.AbsOrigin!.Z
             );
 
-            if (teamArg == "ct")
-            {
-                _zoneBeingEdited.CounterTerroristSpawns.Add(playerPos);
-                commandInfo.ReplyToCommand($"{ChatColors.Blue}Added CT spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.CounterTerroristSpawns.Count} CT spawns total){ChatColors.Default}");
-            }
-            else
-            {
-                _zoneBeingEdited.TerroristSpawns.Add(playerPos);
-                commandInfo.ReplyToCommand($"{ChatColors.Red}Added T spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.TerroristSpawns.Count} T spawns total){ChatColors.Default}");
-            }
+            var playerAngle = new QAngle(
+                player.PlayerPawn.Value.EyeAngles.X,
+                player.PlayerPawn.Value.EyeAngles.Y,
+                player.PlayerPawn.Value.EyeAngles.Z
+            );
+
+            var spawnPoint = new SpawnPoint(playerPos, playerAngle);
+            _zoneBeingEdited.CounterTerroristSpawns.Add(spawnPoint);
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Blue}Added CT spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.CounterTerroristSpawns.Count} CT spawns total){ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}Position: {playerPos.X:F1}, {playerPos.Y:F1}, {playerPos.Z:F1}{ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}View Angle: {playerAngle.X:F1}, {playerAngle.Y:F1}, {playerAngle.Z:F1}{ChatColors.Default}");
 
             // Update spawn visualization
             _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
             
-            Server.PrintToConsole($"[Lockpoint] Added {teamArg.ToUpper()} spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
+            Server.PrintToConsole($"[Lockpoint] Added CT spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
         }
 
         [ConsoleCommand("css_t", "Add a T spawn point to the current zone being edited.")]
@@ -2461,7 +2456,7 @@ namespace Lockpoint
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
@@ -2483,51 +2478,23 @@ namespace Lockpoint
                 player.PlayerPawn.Value.AbsOrigin!.Z
             );
 
-            _zoneBeingEdited.TerroristSpawns.Add(playerPos);
+            var playerAngle = new QAngle(
+                player.PlayerPawn.Value.EyeAngles.X,
+                player.PlayerPawn.Value.EyeAngles.Y,
+                player.PlayerPawn.Value.EyeAngles.Z
+            );
+
+            var spawnPoint = new SpawnPoint(playerPos, playerAngle);
+            _zoneBeingEdited.TerroristSpawns.Add(spawnPoint);
+            
             commandInfo.ReplyToCommand($"{ChatColors.Red}Added T spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.TerroristSpawns.Count} T spawns total){ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}Position: {playerPos.X:F1}, {playerPos.Y:F1}, {playerPos.Z:F1}{ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}View Angle: {playerAngle.X:F1}, {playerAngle.Y:F1}, {playerAngle.Z:F1}{ChatColors.Default}");
 
             // Update spawn visualization
             _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
             
             Server.PrintToConsole($"[Lockpoint] Added T spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
-        }
-
-        [ConsoleCommand("css_ct", "Add a CT spawn point to the current zone being edited.")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandCT(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            if (!_editMode)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
-                return;
-            }
-
-            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
-            {
-                commandInfo.ReplyToCommand("Command must be used by a valid player.");
-                return;
-            }
-
-            if (_zoneBeingEdited == null)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}No zone is being edited. Use css_editzone or create a new zone first.{ChatColors.Default}");
-                return;
-            }
-
-            var playerPos = new CSVector(
-                player.PlayerPawn.Value.AbsOrigin!.X,
-                player.PlayerPawn.Value.AbsOrigin!.Y,
-                player.PlayerPawn.Value.AbsOrigin!.Z
-            );
-
-            _zoneBeingEdited.CounterTerroristSpawns.Add(playerPos);
-            commandInfo.ReplyToCommand($"{ChatColors.Blue}Added CT spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.CounterTerroristSpawns.Count} CT spawns total){ChatColors.Default}");
-
-            // Update spawn visualization
-            _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
-            
-            Server.PrintToConsole($"[Lockpoint] Added CT spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
         }
 
         [ConsoleCommand("css_removespawn", "Remove the closest spawn point from the current zone being edited.")]
@@ -3616,7 +3583,7 @@ namespace Lockpoint
                     player.PrintToChat($"{ChatColors.Magenta}!cancelzone{ChatColors.Default} - Cancel current zone editing");
                     
                     player.PrintToChat($"{ChatColors.DarkBlue}=== Spawn Commands (Edit Mode Only) ==={ChatColors.Default}");
-                    player.PrintToChat($"{ChatColors.Blue}!addspawn <ct|t>{ChatColors.Default} - Add spawn point to current zone");
+                    player.PrintToChat($"{ChatColors.Blue}!ct|!t{ChatColors.Default} - Add spawn point to current zone for the chosen team.");
                     player.PrintToChat($"{ChatColors.Blue}!removespawn{ChatColors.Default} - Remove closest spawn point");
                     player.PrintToChat($"{ChatColors.Blue}!clearspawns{ChatColors.Default} - Clear all spawns from closest zone");
                     player.PrintToChat($"{ChatColors.Blue}!testspawn{ChatColors.Default} - Test spawn points for current zone");

@@ -14,8 +14,8 @@ namespace Lockpoint.Models
         public List<CSVector> Points { get; set; } = new();
         public List<CCSPlayerController> PlayersInZone { get; set; } = new();
 
-        public List<CSVector> TerroristSpawns { get; set; } = new List<CSVector>();
-        public List<CSVector> CounterTerroristSpawns { get; set; } = new List<CSVector>();
+        public List<CSVector> TerroristSpawns { get; set; } = new ();
+        public List<CSVector> CounterTerroristSpawns { get; set; } = new ();
 
         public CSVector Center { get; set; } = new();
         public int ControllingTeam { get; set; } = -1;
@@ -41,6 +41,20 @@ namespace Lockpoint.Models
                 Server.PrintToConsole($"[Zone] Error cleaning up players: {ex.Message}");
                 // If cleanup fails, just clear the entire list
                 PlayersInZone.Clear();
+            }
+        }
+
+        public class SpawnPoint
+        {
+            public CSVector Position { get; set; } = new();
+            public QAngle ViewAngle { get; set; } = new();
+            
+            public SpawnPoint() { }
+            
+            public SpawnPoint(CSVector position, QAngle viewAngle)
+            {
+                Position = position;
+                ViewAngle = viewAngle;
             }
         }
 
