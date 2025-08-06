@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.2.1";
+        public override string ModuleVersion => "0.4.8";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
         
@@ -33,9 +33,12 @@ namespace Lockpoint
         private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
         private readonly float RESPAWN_DELAY = 5.0f; // 5 seconds
 
+        private float _zoneEmptyTime = 0f; // Track how long zone has been empty
+        private const float ZONE_DECAY_DELAY = 5.0f; // 5 seconds before decay starts
+        private bool _zoneWasOccupied = false; // Track if zone was previously occupied
+
         private Zone? _zoneBeingEdited = null;
         private bool _isEditingExistingZone = false;
-        
         private ZoneVisualization? _zoneVisualization;
         private ZoneManager? _zoneManager;
         private readonly Dictionary<CCSPlayerController, Zone> _activeZones = new();
@@ -56,17 +59,18 @@ namespace Lockpoint
         private int _ctScore = 0;
         private int _tScore = 0;
         private System.Timers.Timer? _LockpointTimer;
+        private System.Timers.Timer? _hudTimer;
         private Zone? _previousZone = null;
-        private readonly float CAPTURE_TIME = 10f; // 10 seconds to capture
-        private readonly float TIMER_INTERVAL = 100f; // 100ms updates
+        private readonly float CAPTURE_TIME = 20f; // 10 seconds to capture
+        private const float TIMER_INTERVAL = 100f; // Back to 100ms
+        private const float HUD_UPDATE_INTERVAL = 500f; // Update HUD every 500ms instead of every timer tick
+        private const int WINNING_SCORE = 3; // First team to 3 captures wins
         private bool _waitingForNewZone = false;
         private DateTime _zoneResetTime;
         private string _lastCaptureTeam = "";
         private readonly double _newZoneTimer = 5.0; // 5 seconds
         private bool _isCountingDown = false;
         private string _countdownMessage = "";
-
-        
 
         public override void Load(bool hotReload)
         {
@@ -78,6 +82,8 @@ namespace Lockpoint
             RegisterEventHandler<EventRoundStart>(OnRoundStart);
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath); // Add this
             RegisterEventHandler<EventPlayerDisconnect>(OnPlayerDisconnect); // Add this
+
+            CreateTimers();
 
             _zoneCheckTimer = new System.Timers.Timer(50);
             _zoneCheckTimer.Elapsed += CheckPlayerZones;
@@ -161,61 +167,27 @@ namespace Lockpoint
 
         private void UpdateHUD()
         {
-            // Your existing HUD update logic
-            if (_gamePhase == GamePhase.Warmup)
+            try
             {
-                // Show warmup messages
-                var activePlayers = Utilities.GetPlayers()
-                    .Where(p => p?.IsValid == true && 
-                            p.Connected == PlayerConnectedState.PlayerConnected && 
-                            !p.IsBot &&
-                            p.TeamNum != (byte)CsTeam.None &&
-                            p.TeamNum != (byte)CsTeam.Spectator)
-                    .ToList();
-
-                string warmupMessage = "";
-                
-                if (activePlayers.Count < 2)
+                switch (_gamePhase)
                 {
-                    warmupMessage = "⏳ Need at least 2 players to start...";
+                    case GamePhase.Warmup:
+                        UpdateWarmupHUD();
+                        break;
+                    case GamePhase.EditMode:
+                        UpdateEditModeHUD();
+                        break;
+                    case GamePhase.Active:
+                        UpdateLockpointHUD();
+                        break;
+                    case GamePhase.Ended:
+                        // Could add ended game HUD here if needed
+                        break;
                 }
-                else if (_requireTeamReady)
-                {
-                    // Your existing team ready logic
-                    var ctPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.CounterTerrorist).ToList();
-                    var tPlayers = activePlayers.Where(p => p.TeamNum == (byte)CsTeam.Terrorist).ToList();
-                    
-                    if (ctPlayers.Count == 0 || tPlayers.Count == 0)
-                    {
-                        warmupMessage = "⏳ Need players on both teams to start...";
-                    }
-                    else
-                    {
-                        var readyCT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.CounterTerrorist);
-                        var readyT = _readyPlayers.Any(p => p.IsValid && p.TeamNum == (byte)CsTeam.Terrorist);
-                        
-                        if (!readyCT && !readyT)
-                            warmupMessage = "Type !ready to start the game";
-                        else if (!readyCT)
-                            warmupMessage = "⏳ Waiting for Counter-Terrorists to ready up";
-                        else if (!readyT)
-                            warmupMessage = "⏳ Waiting for Terrorists to ready up";
-                        else
-                            warmupMessage = "✅ All teams ready - starting game!";
-                    }
-                }
-                else
-                {
-                    warmupMessage = $"Ready: {_readyPlayers.Count}/{activePlayers.Count} - Type !ready";
-                }
-
-                foreach (var player in activePlayers)
-                {
-                    if (player?.IsValid == true)
-                    {
-                        player.PrintToCenter(warmupMessage);
-                    }
-                }
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error updating HUD: {ex.Message}");
             }
         }
 
@@ -239,11 +211,13 @@ namespace Lockpoint
         // === CORE GAME SETTINGS ===
         // Disable automatic round win conditions (we control rounds manually)
         mp_ignore_round_win_conditions 1
+        sv_skirmish_id 0
 
         // Long round time since we control rounds manually  
         mp_roundtime 60
         mp_roundtime_defuse 60
         mp_roundtime_hostage 60
+        mp_join_grace_time 5
 
         // Fast transitions
         mp_freezetime 1
@@ -269,10 +243,10 @@ namespace Lockpoint
         // === WEAPON SETTINGS ===
         // Remove map weapons and default loadouts (we handle weapons via code)
         mp_weapons_allow_map_placed 0
-        mp_ct_default_primary """"
-        mp_t_default_primary """"
-        mp_ct_default_secondary """"
-        mp_t_default_secondary """"
+        mp_ct_default_primary ""weapon_m4a1""
+        mp_t_default_primary ""weapon_ak47""
+        mp_ct_default_secondary ""weapon_deagle""
+        mp_t_default_secondary ""weapon_deagle""
 
         // === TEAM SETTINGS ===
         mp_autoteambalance 0
@@ -289,9 +263,10 @@ namespace Lockpoint
         tv_delay 0
         mp_teammatchstat_txt """"
         mp_teammatchstat_holdtime 0
-        cl_versus_intro false
+        mp_min_halftime_duration
         mp_team_intro_time 0
         mp_warmup_pausetimer 0
+        mp_warmup_end
 
         // Basic game mode
         game_type 0
@@ -326,7 +301,7 @@ namespace Lockpoint
                 }
 
                 // Execute the configuration file
-                Server.ExecuteCommand("exec cs2-lockpoint/lockpoint.cfg");
+                Server.ExecuteCommand("exec lockpoint.cfg");
                 Server.PrintToConsole("[Lockpoint] Executed lockpoint.cfg");
             }
             catch (Exception ex)
@@ -516,29 +491,46 @@ namespace Lockpoint
         {
             try
             {
+                // Increment the team score
                 if (team == "CT")
                 {
                     _ctScore++;
-                    UpdateTeamScore(CsTeam.CounterTerrorist, _ctScore);
-                    Server.PrintToChatAll($"{ChatColors.Blue}💙 Counter-Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone?.Name}!{ChatColors.Default}");
                 }
-                else if (team == "T")
+                else
                 {
                     _tScore++;
-                    UpdateTeamScore(CsTeam.Terrorist, _tScore);
-                    Server.PrintToChatAll($"{ChatColors.Red}❤️ Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone?.Name}!{ChatColors.Default}");
                 }
 
-                // Check for game end condition
-                CheckGameEndCondition();
+                // Reset zone capture times and states
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
+                _zoneEmptyTime = 0f;
+                _zoneWasOccupied = false;
 
-                ResetZoneAndSelectNew();
+                // Clear the zone
+                activeZone?.PlayersInZone.Clear();
 
-                Server.PrintToConsole($"[Lockpoint] Zone captured by {team}. Score: CT={_ctScore}, T={_tScore}. Waiting for new zone...");
+                // Announce the capture
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Blue}{team}{ChatColors.Default} captured the zone! Score: CT {_ctScore} - T {_tScore}");
+
+                // Check for game end
+                if (_ctScore >= WINNING_SCORE)
+                {
+                    EndGame("CT");
+                }
+                else if (_tScore >= WINNING_SCORE)
+                {
+                    EndGame("T");
+                }
+                else
+                {
+                    // Start countdown for next zone
+                    StartZoneChangeCountdown();
+                }
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error handling zone capture: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error in OnZoneCaptured: {ex.Message}");
             }
         }
 
@@ -597,37 +589,27 @@ namespace Lockpoint
             try
             {
                 _gamePhase = GamePhase.Ended;
+                
+                // Stop all timers
+                _LockpointTimer?.Stop();
                 _zoneCheckTimer?.Stop();
                 
-                var teamName = winningTeam == "CT" ? "Counter-Terrorists" : "Terrorists";
-                var teamColor = winningTeam == "CT" ? ChatColors.Blue : ChatColors.Red;
-                
-                Server.PrintToChatAll($"{ChatColors.Green}🏆 GAME OVER! 🏆{ChatColors.Default}");
-                Server.PrintToChatAll($"{teamColor}{teamName} WIN!{ChatColors.Default}");
-                Server.PrintToChatAll($"{ChatColors.Yellow}Final Score: CT {_ctScore} - {_tScore} T{ChatColors.Default}");
-                
-                // Clear active zone
-                activeZone = null;
+                // Clear visualizations
                 _zoneVisualization?.ClearZoneVisualization();
+                activeZone = null;
                 
-                // Reset to warmup after delay
-                AddTimer(10.0f, () =>
-                {
-                    _gamePhase = GamePhase.Warmup;
-                    _readyPlayers.Clear();
-                    _ctScore = 0;
-                    _tScore = 0;
-                    _ctZoneTime = 0f;
-                    _tZoneTime = 0f;
-                    
-                    UpdateTeamScore(CsTeam.CounterTerrorist, 0);
-                    UpdateTeamScore(CsTeam.Terrorist, 0);
-                    
-                    Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}⏳ Type !ready to start a new game{ChatColors.Default}");
-                    RespawnAllPlayers();
-                });
+                // Announce winner
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Blue}{winningTeam} WINS!{ChatColors.Default} Final Score: CT {_ctScore} - T {_tScore}");
                 
-                Server.PrintToConsole($"[Lockpoint] Game ended. {teamName} won!");
+                // Reset scores
+                _ctScore = 0;
+                _tScore = 0;
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
+                _zoneEmptyTime = 0f;
+                _zoneWasOccupied = false;
+                
+                Server.PrintToConsole($"[Lockpoint] Game ended - {winningTeam} wins");
             }
             catch (Exception ex)
             {
@@ -726,6 +708,34 @@ namespace Lockpoint
             }
         }
 
+        private void StartZoneChangeCountdown()
+        {
+            // Clear current zone visualization
+            _zoneVisualization?.ClearZoneVisualization();
+            activeZone = null;
+
+            var countdown = 5;
+            
+            void CountdownTick()
+            {
+                Server.NextFrame(() =>
+                {
+                    if (countdown > 0)
+                    {
+                        countdown--;
+                        
+                        Task.Delay(1000).ContinueWith(_ => CountdownTick());
+                    }
+                    else
+                    {
+                        DrawRandomZone();
+                    }
+                });
+            }
+            
+            CountdownTick();
+        }
+
         private void SelectRandomZone()
         {
             try
@@ -764,46 +774,73 @@ namespace Lockpoint
             {
                 try
                 {
-                    // Always update HUD regardless of phase
-                    UpdateLockpointHUD();
-
                     // Only process zone capture logic during active phase
                     if (_gamePhase != GamePhase.Active || activeZone == null)
                         return;
 
                     var zoneState = activeZone.GetZoneState();
+                    
+                    // Update zone color based on current state
+                    _zoneVisualization?.UpdateZoneColor(activeZone, zoneState);
 
                     switch (zoneState)
                     {
                         case ZoneState.CTControlled:
                             _ctZoneTime += TIMER_INTERVAL / 1000f;
+                            _zoneEmptyTime = 0f; // Reset empty timer
+                            _zoneWasOccupied = true;
                             break;
                         
                         case ZoneState.TControlled:
                             _tZoneTime += TIMER_INTERVAL / 1000f;
+                            _zoneEmptyTime = 0f; // Reset empty timer
+                            _zoneWasOccupied = true;
                             break;
                         
                         case ZoneState.Contested:
+                            // No progress when contested, but zone is occupied
+                            _zoneEmptyTime = 0f; // Reset empty timer
+                            _zoneWasOccupied = true;
+                            break;
+                        
                         case ZoneState.Neutral:
+                            // Zone is empty - start or continue empty timer
+                            if (_zoneWasOccupied)
+                            {
+                                _zoneEmptyTime += TIMER_INTERVAL / 1000f;
+                                
+                                // Only start decaying after 5 seconds of being empty
+                                if (_zoneEmptyTime >= ZONE_DECAY_DELAY)
+                                {
+                                    // Decay progress
+                                    if (_ctZoneTime > 0)
+                                    {
+                                        _ctZoneTime = Math.Max(0, _ctZoneTime - (TIMER_INTERVAL / 1000f));
+                                    }
+                                    if (_tZoneTime > 0)
+                                    {
+                                        _tZoneTime = Math.Max(0, _tZoneTime - (TIMER_INTERVAL / 1000f));
+                                    }
+                                    
+                                    // If both teams have no progress, zone is truly neutral again
+                                    if (_ctZoneTime <= 0 && _tZoneTime <= 0)
+                                    {
+                                        _zoneWasOccupied = false;
+                                        _zoneEmptyTime = 0f;
+                                    }
+                                }
+                            }
                             break;
                     }
 
-                    // Check for capture completion
+                    // Check for zone capture
                     if (_ctZoneTime >= CAPTURE_TIME)
                     {
-                        _ctScore++;
-                        _lastCaptureTeam = "Counter-Terrorists";
-                        UpdateTeamScore(CsTeam.CounterTerrorist, _ctScore);
-                        Server.PrintToChatAll($"{ChatColors.LightBlue}★ Counter-Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}! Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
-                        ResetZoneAndSelectNew();
+                        OnZoneCaptured("CT");
                     }
                     else if (_tZoneTime >= CAPTURE_TIME)
                     {
-                        _tScore++;
-                        _lastCaptureTeam = "Terrorists";
-                        UpdateTeamScore(CsTeam.Terrorist, _tScore);
-                        Server.PrintToChatAll($"{ChatColors.Red}★ Terrorists{ChatColors.Default} captured {ChatColors.Yellow}{activeZone.Name}{ChatColors.Default}! Score: {ChatColors.LightBlue}CT {_ctScore}{ChatColors.Default} - {ChatColors.Red}T {_tScore}{ChatColors.Default}");
-                        ResetZoneAndSelectNew();
+                        OnZoneCaptured("T");
                     }
                 }
                 catch (Exception ex)
@@ -840,36 +877,45 @@ namespace Lockpoint
         {
             try
             {
-                // PRIORITY 1: Show countdown if active
-                if (_isCountingDown && !string.IsNullOrEmpty(_countdownMessage))
-                {
-                    DisplayCountdownHUD();
+                if (_gamePhase != GamePhase.Active)
                     return;
-                }
+
+                string currentHudContent;
                 
-                // PRIORITY 2: Handle other game phases
-                if (_gamePhase == GamePhase.EditMode)
+                if (activeZone == null)
                 {
-                    UpdateEditModeHUD();
-                    return;
+                    // No active zone - use simple text
+                    currentHudContent = "⏳ Waiting for zone...";
                 }
-                
-                if (_gamePhase == GamePhase.Warmup)
+                else
                 {
-                    UpdateWarmupHUD();
-                    return;
+                    // Show zone capture progress - use simple text formatting
+                    var ctProgress = (_ctZoneTime / CAPTURE_TIME) * 100;
+                    var tProgress = (_tZoneTime / CAPTURE_TIME) * 100;
+                    var zoneState = activeZone.GetZoneState();
+                    
+                    string stateText = zoneState switch
+                    {
+                        ZoneState.CTControlled => "🔵 CT Capturing",
+                        ZoneState.TControlled => "🔴 T Capturing", 
+                        ZoneState.Contested => "🟣 CONTESTED",
+                        ZoneState.Neutral => "🟢 Neutral",
+                        _ => "❓ Unknown"
+                    };
+
+                    currentHudContent = $"Zone: {activeZone.Name}\n" +
+                                    $"{stateText}\n" +
+                                    $"[{_ctScore}] CT: {ctProgress:F0}% | [{_tScore}] T: {tProgress:F0}%";
                 }
-                
-                if (_gamePhase == GamePhase.Active)
+
+                // Use PrintToCenter instead of PrintToCenterHtml
+                var allPlayers = Utilities.GetPlayers()
+                    .Where(p => p?.IsValid == true && p.Connected == PlayerConnectedState.PlayerConnected && !p.IsBot)
+                    .ToList();
+
+                foreach (var player in allPlayers)
                 {
-                    UpdateActiveGameHUD();
-                    return;
-                }
-                
-                if (_gamePhase == GamePhase.Ended)
-                {
-                    UpdateEndedGameHUD();
-                    return;
+                    player.PrintToCenter(currentHudContent); // Changed from PrintToCenterHtml
                 }
             }
             catch (Exception ex)
@@ -1177,6 +1223,7 @@ namespace Lockpoint
                                 // Restart timers only if game is active
                                 _zoneCheckTimer?.Start();
                                 _LockpointTimer?.Start();
+                                _hudTimer?.Start();
                                 
                                 Server.PrintToChatAll($"{ChatColors.Green}🎮 Lockpoint round started!{ChatColors.Default}");
                             });
@@ -1272,22 +1319,37 @@ namespace Lockpoint
                 if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
                 {
                     Server.PrintToConsole("[Lockpoint] No zones available to draw");
+                    Server.PrintToChatAll($"{ChatColors.Red}[Lockpoint] No zones available!{ChatColors.Default}");
                     return;
                 }
 
-                SelectRandomZone(); // This calls the base zone selection logic
+                // Select a random zone
+                var availableZones = _zoneManager.Zones.ToList();
+                var random = new Random();
+                var selectedZone = availableZones[random.Next(availableZones.Count)];
                 
-                if (activeZone != null)
-                {
-                    _zoneVisualization?.DrawZone(activeZone);
-                    // Used for edit mode exit and round start
-                    Server.PrintToChatAll($"{ChatColors.Yellow}📍 Zone Selected: {ChatColors.Green}{activeZone.Name}{ChatColors.Default}");
-                    Server.PrintToConsole($"[Lockpoint] Drew random zone: {activeZone.Name}");
-                }
+                // Set as active zone
+                activeZone = selectedZone;
+                activeZone.PlayersInZone.Clear();
+                
+                // Reset capture times
+                _ctZoneTime = 0f;
+                _tZoneTime = 0f;
+                _zoneEmptyTime = 0f;
+                _zoneWasOccupied = false;
+                
+                // Draw the zone
+                _zoneVisualization?.DrawZone(activeZone);
+                
+                // Announce the new zone
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Zone '{activeZone.Name}' is now active!");
+                
+                Server.PrintToConsole($"[Lockpoint] New active zone: {activeZone.Name}");
             }
             catch (Exception ex)
             {
-                Server.PrintToConsole($"[Lockpoint] Error drawing random zone: {ex.Message}");
+                Server.PrintToConsole($"[Lockpoint] Error in DrawRandomZone: {ex.Message}");
+                Server.PrintToChatAll($"{ChatColors.Red}[Lockpoint] Error selecting new zone!{ChatColors.Default}");
             }
         }
 
@@ -1318,12 +1380,33 @@ namespace Lockpoint
             }
         }
 
+        private void CreateTimers()
+        {
+            // Main game timer - runs every 100ms during active gameplay
+            _LockpointTimer = new System.Timers.Timer(TIMER_INTERVAL);
+            _LockpointTimer.Elapsed += UpdateLockpointTimer;
+            _LockpointTimer.AutoReset = true;
+
+            // Zone check timer - runs every 50ms to check player positions
+            _zoneCheckTimer = new System.Timers.Timer(50);
+            _zoneCheckTimer.Elapsed += CheckPlayerZones;
+            _zoneCheckTimer.AutoReset = true;
+
+            // HUD timer - runs every 500ms to update HUD (should always run, not just during active)
+            _hudTimer = new System.Timers.Timer(HUD_UPDATE_INTERVAL);
+            _hudTimer.Elapsed += (sender, e) => Server.NextFrame(() => UpdateHUD()); // Call UpdateHUD, not UpdateLockpointHUD
+            _hudTimer.AutoReset = true;
+            _hudTimer.Start(); // Start immediately when plugin loads
+        }
+
         public override void Unload(bool hotReload)
         {
             _zoneCheckTimer?.Stop();
             _zoneCheckTimer?.Dispose();
             _LockpointTimer?.Stop();
             _LockpointTimer?.Dispose();
+            _hudTimer?.Stop();
+            _hudTimer?.Dispose();
 
             CleanupAllRespawnTimers();
 
@@ -1391,7 +1474,7 @@ namespace Lockpoint
                         {
                             try
                             {
-                                _zoneVisualization?.UpdateZoneColor(activeZone);
+                                _zoneVisualization?.UpdateZoneColor(activeZone, currentState);
                                 
                                 if (currentState != previousState)
                                 {
@@ -1914,106 +1997,86 @@ namespace Lockpoint
             commandInfo.ReplyToCommand($"Reloaded {_zoneManager?.Zones.Count} zones for map {mapName}");
         }
 
-        [ConsoleCommand("css_addzone", "Creates a new Lockpoint zone.")]
-        [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [ConsoleCommand("css_addzone", "Create a new zone (Admin only, Edit mode required).")]
+        [CommandHelper(minArgs: 1, usage: "<zone_name>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandAddZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
-                return;
-            }
-
-            if (player == null || !player.IsValid)
-            {
-                commandInfo.ReplyToCommand("Command must be used by a player.");
-                return;
-            }
-
-            if (player.PlayerPawn?.Value == null)
-            {
-                commandInfo.ReplyToCommand("You must have an alive player pawn.");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
             var zoneName = commandInfo.GetArg(1);
-            if (string.IsNullOrWhiteSpace(zoneName))
+            
+            // Fix: Check if zone exists using the correct method
+            if (_zoneManager?.Zones?.Any(z => z.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase)) == true)
             {
-                commandInfo.ReplyToCommand("You must specify a zone name.");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Zone '{zoneName}' already exists!{ChatColors.Default}");
                 return;
             }
 
-            if (_activeZones.ContainsKey(player))
-            {
-                commandInfo.ReplyToCommand("You already have an active zone. Use css_endzone to finish it first.");
-                return;
-            }
-
-            var playerPos = new CSVector(player.PlayerPawn.Value.AbsOrigin!.X, 
-                                       player.PlayerPawn.Value.AbsOrigin!.Y, 
-                                       player.PlayerPawn.Value.AbsOrigin!.Z);
-
-            var newZone = new Zone
+            // Fix: Use the correct Zone constructor
+            _zoneBeingEdited = new Zone
             {
                 Name = zoneName,
-                Points = new List<CSVector> { playerPos }
+                Points = new List<CSVector>(),
+                CounterTerroristSpawns = new List<CSVector>(),
+                TerroristSpawns = new List<CSVector>()
             };
-
-            _activeZones[player] = newZone;
-            commandInfo.ReplyToCommand($"Zone '{zoneName}' started. Use css_addpoint to add more points, css_endzone to finish.");
+            _isEditingExistingZone = false;
+            
+            // Set edit mode with the new zone being created (will make it yellow when points are added)
+            _zoneVisualization?.SetEditMode(true, _zoneBeingEdited);
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Created new zone: {zoneName}{ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}Zone will appear in yellow when you add points. Use css_addpoint to start defining the zone.{ChatColors.Default}");
         }
 
-        [ConsoleCommand("css_addpoint", "Adds a point to the current zone.")]
+        [ConsoleCommand("css_addpoint", "Add a point to the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandAddPoint(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode to create zones! Use !edit{ChatColors.Default}");
-                return;
-            }
-            if (player == null || !player.IsValid)
-            {
-                commandInfo.ReplyToCommand("Command must be used by a player.");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
-            if (player.PlayerPawn?.Value == null)
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
             {
-                commandInfo.ReplyToCommand("You must have an alive player pawn.");
+                commandInfo.ReplyToCommand("Command must be used by a valid player.");
                 return;
             }
 
-            if (!_activeZones.ContainsKey(player))
+            if (_zoneBeingEdited == null)
             {
-                commandInfo.ReplyToCommand("You don't have an active zone. Use css_addzone [name] to start one.");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}No zone is being edited. Use css_addzone to create a new zone or css_editzone to edit an existing one.{ChatColors.Default}");
                 return;
             }
 
-            var zone = _activeZones[player];
-            var playerPos = new CSVector(player.PlayerPawn.Value.AbsOrigin!.X, 
-                                       player.PlayerPawn.Value.AbsOrigin!.Y, 
-                                       player.PlayerPawn.Value.AbsOrigin!.Z);
+            var playerPos = new CSVector(
+                player.PlayerPawn.Value.AbsOrigin!.X,
+                player.PlayerPawn.Value.AbsOrigin!.Y,
+                player.PlayerPawn.Value.AbsOrigin!.Z
+            );
 
-            // Calculate distance manually
-            foreach (var point in zone.Points)
+            _zoneBeingEdited.Points.Add(playerPos);
+            
+            // Update visualization to show yellow zone with new point
+            _zoneVisualization?.SetEditMode(true, _zoneBeingEdited);
+            _zoneVisualization?.DrawZone(_zoneBeingEdited);
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Added point {_zoneBeingEdited.Points.Count} to zone '{_zoneBeingEdited.Name}'{ChatColors.Default}");
+            
+            if (_zoneBeingEdited.Points.Count >= 3)
             {
-                var dx = playerPos.X - point.X;
-                var dy = playerPos.Y - point.Y;
-                var dz = playerPos.Z - point.Z;
-                var distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                
-                if (distance < 50.0f)
-                {
-                    commandInfo.ReplyToCommand("Too close to an existing point. Move away and try again.");
-                    return;
-                }
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}Zone now has {_zoneBeingEdited.Points.Count} points and is visible in yellow!{ChatColors.Default}");
             }
-
-            zone.Points.Add(playerPos);
-            commandInfo.ReplyToCommand($"Point {zone.Points.Count} added to zone '{zone.Name}'. Total points: {zone.Points.Count}");
+            
+            Server.PrintToConsole($"[Lockpoint] Added point {_zoneBeingEdited.Points.Count} to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
         }
 
         [ConsoleCommand("css_lastpoint", "Add the last point and finish the zone area (but don't save yet).")]
@@ -2056,56 +2119,65 @@ namespace Lockpoint
             // Draw the zone for visualization
             _zoneVisualization?.DrawZone(zone);
             
-            commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zone.Name}' area completed with {zone.Points.Count} points. Add spawn points then use css_endzone to save.{ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zone.Name}' area completed with {zone.Points.Count} points. Add spawn points then use css_savezone to save.{ChatColors.Default}");
             Server.PrintToConsole($"[Lockpoint] Zone '{zone.Name}' area finished by {player.PlayerName}");
         }
 
-        [ConsoleCommand("css_endzone", "Save the current zone being edited.")]
+        [ConsoleCommand("css_savezone", "Save the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandEndZone(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandSaveZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
             if (_zoneBeingEdited == null)
             {
-                commandInfo.ReplyToCommand("No zone is being edited. Create a zone area first.");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}No zone is being edited.{ChatColors.Default}");
+                return;
+            }
+
+            if (_zoneBeingEdited.Points.Count < 3)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Zone must have at least 3 points to be valid! Current: {_zoneBeingEdited.Points.Count}{ChatColors.Default}");
+                return;
+            }
+
+            if (_zoneBeingEdited.CounterTerroristSpawns.Count == 0 || _zoneBeingEdited.TerroristSpawns.Count == 0)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Zone must have at least one spawn point for each team!{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}CT spawns: {_zoneBeingEdited.CounterTerroristSpawns.Count}, T spawns: {_zoneBeingEdited.TerroristSpawns.Count}{ChatColors.Default}");
                 return;
             }
 
             try
             {
-                var currentMapName = Server.MapName;
-                
-                if (!_isEditingExistingZone)
+                if (_isEditingExistingZone)
                 {
-                    // Add new zone
-                    if (_zoneManager?.Zones != null)
-                    {
-                        _zoneManager.Zones.Add(_zoneBeingEdited);
-                    }
+                    // Fix: Zone is already in the list, just save
+                    // No need to update since we're modifying the existing object
                 }
-                // If editing existing zone, it's already in the list and modified by reference
-
-                // Save zones with updated spawn points
-                _zoneManager?.SaveZonesForMap(currentMapName, _zoneManager.Zones);
+                else
+                {
+                    // Fix: Add the zone to the manager's list
+                    _zoneManager?.Zones?.Add(_zoneBeingEdited);
+                }
                 
-                commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{_zoneBeingEdited.Name}' saved successfully! (T:{_zoneBeingEdited.TerroristSpawns.Count} CT:{_zoneBeingEdited.CounterTerroristSpawns.Count} spawns){ChatColors.Default}");
-                Server.PrintToConsole($"[Lockpoint] Zone '{_zoneBeingEdited.Name}' saved by {player?.PlayerName}");
-
-                // Clear spawn visualization for the zone we just finished editing
-                _zoneVisualization?.ClearSpawnPoints(_zoneBeingEdited);
-
-                // Clear editing state
+                // Fix: Use the correct save method
+                _zoneManager?.SaveZonesForMap(Server.MapName, _zoneManager.Zones);
+                
+                var zoneName = _zoneBeingEdited.Name;
                 _zoneBeingEdited = null;
                 _isEditingExistingZone = false;
-
-                // Refresh zone visualization (without spawns)
-                DrawAllZonesForEdit();
+                
+                // Clear edit mode visualization for this zone
+                _zoneVisualization?.ClearZoneVisualization();
+                
+                commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zoneName}' saved successfully!{ChatColors.Default}");
+                Server.PrintToConsole($"[Lockpoint] Zone '{zoneName}' saved by {player?.PlayerName}");
             }
             catch (Exception ex)
             {
@@ -2114,70 +2186,50 @@ namespace Lockpoint
             }
         }
 
-        [ConsoleCommand("css_editzone", "Edit an existing zone (closest or by name).")]
-        [CommandHelper(minArgs: 0, usage: "[zone_name]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [ConsoleCommand("css_editzone", "Edit an existing zone (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<zone_name>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandEditZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
             if (!_editMode)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
-                return;
-            }
-
-            if (player?.IsValid != true)
-            {
-                commandInfo.ReplyToCommand("Command must be used by a valid player.");
-                return;
-            }
-
-            if (_zoneBeingEdited != null)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}Already editing zone '{_zoneBeingEdited.Name}'. Use css_endzone to save or css_cancelzone to cancel.{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
                 return;
             }
 
             var zoneName = commandInfo.GetArg(1);
-            Zone? zoneToEdit = null;
-
-            if (string.IsNullOrWhiteSpace(zoneName))
+            // Fix: Use the correct method name from your ZoneManager
+            var zone = _zoneManager?.Zones?.FirstOrDefault(z => z.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase));
+            
+            if (zone == null)
             {
-                // Find closest zone
-                zoneToEdit = FindClosestZone(player);
-                if (zoneToEdit == null)
-                {
-                    commandInfo.ReplyToCommand($"{ChatColors.Red}No zones found nearby.{ChatColors.Default}");
-                    return;
-                }
-            }
-            else
-            {
-                // Find by name
-                zoneToEdit = _zoneManager?.Zones?.FirstOrDefault(z => 
-                    string.Equals(z.Name, zoneName, StringComparison.OrdinalIgnoreCase));
-                
-                if (zoneToEdit == null)
-                {
-                    commandInfo.ReplyToCommand($"{ChatColors.Red}Zone '{zoneName}' not found.{ChatColors.Default}");
-                    return;
-                }
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Zone '{zoneName}' not found!{ChatColors.Default}");
+                return;
             }
 
-            _zoneBeingEdited = zoneToEdit;
+            _zoneBeingEdited = zone;
             _isEditingExistingZone = true;
             
-            // Show spawn points for this zone
+            // Set edit mode with the specific zone being edited (will make it yellow)
+            _zoneVisualization?.SetEditMode(true, _zoneBeingEdited);
+            _zoneVisualization?.DrawZone(_zoneBeingEdited);
             _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
             
-            commandInfo.ReplyToCommand($"{ChatColors.Green}Now editing zone '{zoneToEdit.Name}' (T:{zoneToEdit.TerroristSpawns.Count} CT:{zoneToEdit.CounterTerroristSpawns.Count} spawns). Use css_addspawn/css_removespawn to modify.{ChatColors.Default}");
-            Server.PrintToConsole($"[Lockpoint] {player.PlayerName} started editing zone '{zoneToEdit.Name}'");
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Now editing zone: {zoneName}{ChatColors.Default}");
+            commandInfo.ReplyToCommand($"{ChatColors.Yellow}Zone is now highlighted in yellow. Use zone commands to modify.{ChatColors.Default}");
         }
 
-        [ConsoleCommand("css_cancelzone", "Cancel current zone editing.")]
+        [ConsoleCommand("css_cancelzone", "Cancel editing the current zone (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandCancelZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use css_editmode{ChatColors.Default}");
+                return;
+            }
+
             if (_zoneBeingEdited == null)
             {
                 commandInfo.ReplyToCommand("No zone is being edited.");
@@ -2186,11 +2238,15 @@ namespace Lockpoint
 
             var zoneName = _zoneBeingEdited.Name;
             
-            // Clear spawn visualization for the zone we're canceling
+            // Clear all visualizations for the zone we're canceling
             _zoneVisualization?.ClearSpawnPoints(_zoneBeingEdited);
+            _zoneVisualization?.ClearZoneVisualization();
             
             _zoneBeingEdited = null;
             _isEditingExistingZone = false;
+            
+            // Reset edit mode without specific zone
+            _zoneVisualization?.SetEditMode(true);
             
             commandInfo.ReplyToCommand($"{ChatColors.Yellow}Cancelled editing zone '{zoneName}'.{ChatColors.Default}");
         }
@@ -2762,19 +2818,48 @@ namespace Lockpoint
             }
         }
 
-        [ConsoleCommand("css_start", "Force start the game (Admin only).")]
+        [ConsoleCommand("css_start", "Start the Lockpoint game (Admin only).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandStart(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandStartGame(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (_gamePhase != GamePhase.Warmup)
+            if (_gamePhase == GamePhase.Active)
             {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}Game is already in progress!{ChatColors.Default}");
+                commandInfo.ReplyToCommand($"{ChatColors.Yellow}Game is already active!{ChatColors.Default}");
                 return;
             }
 
-            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}Admin forced game start!{ChatColors.Default}");
-            StartGame();
+            // Check if we have zones available
+            if (_zoneManager?.Zones == null || _zoneManager.Zones.Count == 0)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}No zones available for this map! Use css_editmode to create zones.{ChatColors.Default}");
+                return;
+            }
+
+            // Reset all game state
+            _ctScore = 0;
+            _tScore = 0;
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            _zoneEmptyTime = 0f;
+            _zoneWasOccupied = false;
+            activeZone = null;
+
+            // Set to active phase
+            _gamePhase = GamePhase.Active;
+
+            // Start the main game timer
+            _LockpointTimer?.Start();
+            _zoneCheckTimer?.Start();
+            _hudTimer?.Start();
+            // Respawn all players and wait 5 seconds for first zone
+            RespawnAllPlayers();
+            
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Game started! First zone in 5 seconds...");
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Lockpoint game started!{ChatColors.Default}");
+
+            // Start zone change countdown with 5 second delay
+            StartZoneChangeCountdown();
         }
 
         [ConsoleCommand("css_stop", "Stop the game and return to warmup (Admin only).")]
@@ -3180,6 +3265,8 @@ namespace Lockpoint
                 
                 // Clear all respawn timers
                 CleanupAllRespawnTimers();
+                _zoneVisualization?.SetEditMode(true);
+
                 
                 // Enable cheats
                 Server.ExecuteCommand("sv_cheats 1");
@@ -3217,6 +3304,11 @@ namespace Lockpoint
             {
                 _editMode = false;
                 _gamePhase = _previousGamePhase;
+                _zoneBeingEdited = null;
+                _isEditingExistingZone = false;
+
+                    _zoneVisualization?.ClearEditMode();
+                    _zoneVisualization?.ClearZoneVisualization();
                 
                 // Disable cheats (restore previous state)
                 if (!_previousCheatsEnabled)
@@ -3241,8 +3333,7 @@ namespace Lockpoint
                     {
                         if (_gamePhase == GamePhase.Active)
                         {
-                            DrawRandomZone();
-                            _zoneCheckTimer?.Start();
+                            StartZoneChangeCountdown();
                         }
                         _LockpointTimer?.Start();
                     });
@@ -3446,7 +3537,7 @@ namespace Lockpoint
                 Server.PrintToConsole("css_addzone <name> - Start creating a new zone");
                 Server.PrintToConsole("css_addpoint - Add a point to current zone");
                 Server.PrintToConsole("css_lastpoint - Add final point and finish zone area");
-                Server.PrintToConsole("css_endzone - Save the current zone");
+                Server.PrintToConsole("css_savezone - Save the current zone");
                 Server.PrintToConsole("css_editzone [name] - Edit existing zone (closest or by name)");
                 Server.PrintToConsole("css_removezone [name] - Remove zone (closest or by name)");
                 Server.PrintToConsole("css_cancelzone - Cancel current zone editing");
