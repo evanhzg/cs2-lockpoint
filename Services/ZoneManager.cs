@@ -114,6 +114,11 @@ namespace Lockpoint.Services
                     }
 
                     Server.PrintToConsole($"[Lockpoint] Final Zones count: {Zones.Count}");
+
+                    for (int i = 0; i < Zones.Count; i++)
+                    {
+                        Zones[i].Id = i;
+                    }
                 }
                 else
                 {
@@ -154,6 +159,10 @@ namespace Lockpoint.Services
 
             try
             {
+                for (int i = 0; i < zonesToSave.Count; i++)
+                {
+                    zonesToSave[i].Id = i;
+                }
                 var mapData = new MapZoneData
                 {
                     MapName = mapName,

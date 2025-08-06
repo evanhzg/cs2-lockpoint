@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Lockpoint")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+aff3dc3c9b34afb5d91e576d92508dfaefdf9e08")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b94a881a530dcba36a395dae50d147b6563c2754")]
 [assembly: System.Reflection.AssemblyProductAttribute("Lockpoint")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Lockpoint")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

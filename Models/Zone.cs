@@ -9,6 +9,7 @@ namespace Lockpoint.Models
 {
     public class Zone
     {
+        public int Id { get; set; }
         public string Name { get; set; } = "";
         public List<CSVector> Points { get; set; } = new();
         public List<CCSPlayerController> PlayersInZone { get; set; } = new();

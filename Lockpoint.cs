@@ -19,9 +19,13 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.4.8";
+        public override string ModuleVersion => "0.5.1";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
+
+        private DateTime _gameEndTime;
+        private string _gameEndMessage = "";
+
         
         private const string LockpointCfgDirectory = "/cfg/";
         private const string LockpointCfgPath = "/cfg/lockpoint.cfg";
@@ -181,13 +185,25 @@ namespace Lockpoint
                         UpdateLockpointHUD();
                         break;
                     case GamePhase.Ended:
-                        // Could add ended game HUD here if needed
+                        UpdateEndGameHUD();
                         break;
                 }
             }
             catch (Exception ex)
             {
                 Server.PrintToConsole($"[Lockpoint] Error updating HUD: {ex.Message}");
+            }
+        }
+
+        private void UpdateEndGameHUD()
+        {
+            var allPlayers = Utilities.GetPlayers()
+                .Where(p => p?.IsValid == true && p.Connected == PlayerConnectedState.PlayerConnected && !p.IsBot)
+                .ToList();
+
+            foreach (var player in allPlayers)
+            {
+                player.PrintToCenter(_gameEndMessage);
             }
         }
 
@@ -589,8 +605,9 @@ namespace Lockpoint
             try
             {
                 _gamePhase = GamePhase.Ended;
+                _gameEndTime = DateTime.Now;
                 
-                // Stop all timers
+                // Stop game timers but keep HUD timer running for end screen
                 _LockpointTimer?.Stop();
                 _zoneCheckTimer?.Stop();
                 
@@ -598,16 +615,29 @@ namespace Lockpoint
                 _zoneVisualization?.ClearZoneVisualization();
                 activeZone = null;
                 
+                // Set end game message for HUD
+                _gameEndMessage = $"🏆 {winningTeam} WINS! 🏆\nFinal Score: CT {_ctScore} - T {_tScore}\nReturning to warmup...";
+                
                 // Announce winner
                 Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Blue}{winningTeam} WINS!{ChatColors.Default} Final Score: CT {_ctScore} - T {_tScore}");
                 
-                // Reset scores
-                _ctScore = 0;
-                _tScore = 0;
-                _ctZoneTime = 0f;
-                _tZoneTime = 0f;
-                _zoneEmptyTime = 0f;
-                _zoneWasOccupied = false;
+                // Schedule return to warmup after 10 seconds
+                Task.Delay(10000).ContinueWith(_ => 
+                {
+                    Server.NextFrame(() => 
+                    {
+                        _gamePhase = GamePhase.Warmup;
+                        _ctScore = 0;
+                        _tScore = 0;
+                        _ctZoneTime = 0f;
+                        _tZoneTime = 0f;
+                        _zoneEmptyTime = 0f;
+                        _zoneWasOccupied = false;
+                        _gameEndMessage = "";
+                        
+                        Server.PrintToChatAll($"{ChatColors.Yellow}[Lockpoint]{ChatColors.Default} - Returned to warmup phase");
+                    });
+                });
                 
                 Server.PrintToConsole($"[Lockpoint] Game ended - {winningTeam} wins");
             }
@@ -2034,6 +2064,15 @@ namespace Lockpoint
             commandInfo.ReplyToCommand($"{ChatColors.Yellow}Zone will appear in yellow when you add points. Use css_addpoint to start defining the zone.{ChatColors.Default}");
         }
 
+        [ConsoleCommand("css_z", "Create a new zone (Admin only, Edit mode required).")]
+        [CommandHelper(minArgs: 1, usage: "<zone_name>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandZ(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            // Alias for css_addzone
+            OnCommandAddZone(player, commandInfo);
+        }
+
         [ConsoleCommand("css_addpoint", "Add a point to the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
@@ -2079,49 +2118,58 @@ namespace Lockpoint
             Server.PrintToConsole($"[Lockpoint] Added point {_zoneBeingEdited.Points.Count} to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
         }
 
-        [ConsoleCommand("css_lastpoint", "Add the last point and finish the zone area (but don't save yet).")]
+        [ConsoleCommand("css_p", "Add a point to the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
-        public void OnCommandLastPoint(CCSPlayerController? player, CommandInfo commandInfo)
+        public void OnCommandP(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (!_editMode)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
-                return;
-            }
-
-            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
-            {
-                commandInfo.ReplyToCommand("Command must be used by a valid player.");
-                return;
-            }
-
-            if (!_activeZones.ContainsKey(player))
-            {
-                commandInfo.ReplyToCommand("You don't have an active zone. Use css_addzone first.");
-                return;
-            }
-
-            var zone = _activeZones[player];
-            var playerPos = new CSVector(
-                player.PlayerPawn.Value.AbsOrigin!.X,
-                player.PlayerPawn.Value.AbsOrigin!.Y,
-                player.PlayerPawn.Value.AbsOrigin!.Z
-            );
-
-            zone.Points.Add(playerPos);
-            
-            // Move to editing state but don't save yet
-            _zoneBeingEdited = zone;
-            _isEditingExistingZone = false;
-            _activeZones.Remove(player);
-
-            // Draw the zone for visualization
-            _zoneVisualization?.DrawZone(zone);
-            
-            commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zone.Name}' area completed with {zone.Points.Count} points. Add spawn points then use css_savezone to save.{ChatColors.Default}");
-            Server.PrintToConsole($"[Lockpoint] Zone '{zone.Name}' area finished by {player.PlayerName}");
+            // Alias for css_addpoint
+            OnCommandAddPoint(player, commandInfo);
         }
+
+        // [ConsoleCommand("css_lastpoint", "Add the last point and finish the zone area (but don't save yet).")]
+        // [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        // [RequiresPermissions("@css/root")]
+        // public void OnCommandLastPoint(CCSPlayerController? player, CommandInfo commandInfo)
+        // {
+        //     if (!_editMode)
+        //     {
+        //         commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+        //         return;
+        //     }
+
+        //     if (player?.IsValid != true || player.PlayerPawn?.Value == null)
+        //     {
+        //         commandInfo.ReplyToCommand("Command must be used by a valid player.");
+        //         return;
+        //     }
+
+        //     if (!_activeZones.ContainsKey(player))
+        //     {
+        //         commandInfo.ReplyToCommand("You don't have an active zone. Use css_addzone first.");
+        //         return;
+        //     }
+
+        //     var zone = _activeZones[player];
+        //     var playerPos = new CSVector(
+        //         player.PlayerPawn.Value.AbsOrigin!.X,
+        //         player.PlayerPawn.Value.AbsOrigin!.Y,
+        //         player.PlayerPawn.Value.AbsOrigin!.Z
+        //     );
+
+        //     zone.Points.Add(playerPos);
+            
+        //     // Move to editing state but don't save yet
+        //     _zoneBeingEdited = zone;
+        //     _isEditingExistingZone = false;
+        //     _activeZones.Remove(player);
+
+        //     // Draw the zone for visualization
+        //     _zoneVisualization?.DrawZone(zone);
+            
+        //     commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{zone.Name}' area completed with {zone.Points.Count} points. Add spawn points then use css_savezone to save.{ChatColors.Default}");
+        //     Server.PrintToConsole($"[Lockpoint] Zone '{zone.Name}' area finished by {player.PlayerName}");
+        // }
 
         [ConsoleCommand("css_savezone", "Save the zone being edited (Admin only, Edit mode required).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
@@ -2184,6 +2232,15 @@ namespace Lockpoint
                 commandInfo.ReplyToCommand($"{ChatColors.Red}Error saving zone: {ex.Message}{ChatColors.Default}");
                 Server.PrintToConsole($"[Lockpoint] Error saving zone: {ex.Message}");
             }
+        }
+
+        [ConsoleCommand("css_s", "Save the zone being edited (Admin only, Edit mode required).")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandS(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            // Alias for css_savezone
+            OnCommandSaveZone(player, commandInfo);
         }
 
         [ConsoleCommand("css_editzone", "Edit an existing zone (Admin only).")]
@@ -2302,6 +2359,82 @@ namespace Lockpoint
             _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
             
             Server.PrintToConsole($"[Lockpoint] Added {teamArg.ToUpper()} spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
+        }
+
+        [ConsoleCommand("css_t", "Add a T spawn point to the current zone being edited.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandT(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+                return;
+            }
+
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
+            {
+                commandInfo.ReplyToCommand("Command must be used by a valid player.");
+                return;
+            }
+
+            if (_zoneBeingEdited == null)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}No zone is being edited. Use css_editzone or create a new zone first.{ChatColors.Default}");
+                return;
+            }
+
+            var playerPos = new CSVector(
+                player.PlayerPawn.Value.AbsOrigin!.X,
+                player.PlayerPawn.Value.AbsOrigin!.Y,
+                player.PlayerPawn.Value.AbsOrigin!.Z
+            );
+
+            _zoneBeingEdited.TerroristSpawns.Add(playerPos);
+            commandInfo.ReplyToCommand($"{ChatColors.Red}Added T spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.TerroristSpawns.Count} T spawns total){ChatColors.Default}");
+
+            // Update spawn visualization
+            _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
+            
+            Server.PrintToConsole($"[Lockpoint] Added T spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
+        }
+
+        [ConsoleCommand("css_ct", "Add a CT spawn point to the current zone being edited.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandCT(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!_editMode)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}You must be in edit mode! Use !edit{ChatColors.Default}");
+                return;
+            }
+
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null)
+            {
+                commandInfo.ReplyToCommand("Command must be used by a valid player.");
+                return;
+            }
+
+            if (_zoneBeingEdited == null)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}No zone is being edited. Use css_editzone or create a new zone first.{ChatColors.Default}");
+                return;
+            }
+
+            var playerPos = new CSVector(
+                player.PlayerPawn.Value.AbsOrigin!.X,
+                player.PlayerPawn.Value.AbsOrigin!.Y,
+                player.PlayerPawn.Value.AbsOrigin!.Z
+            );
+
+            _zoneBeingEdited.CounterTerroristSpawns.Add(playerPos);
+            commandInfo.ReplyToCommand($"{ChatColors.Blue}Added CT spawn to zone '{_zoneBeingEdited.Name}' ({_zoneBeingEdited.CounterTerroristSpawns.Count} CT spawns total){ChatColors.Default}");
+
+            // Update spawn visualization
+            _zoneVisualization?.DrawSpawnPoints(_zoneBeingEdited);
+            
+            Server.PrintToConsole($"[Lockpoint] Added CT spawn to zone '{_zoneBeingEdited.Name}' by {player.PlayerName}");
         }
 
         [ConsoleCommand("css_removespawn", "Remove the closest spawn point from the current zone being edited.")]
@@ -2618,38 +2751,6 @@ namespace Lockpoint
             }
         }
 
-        [ConsoleCommand("css_debugzoneload", "Debug zone loading.")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandDebugZoneLoad(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            var mapName = Server.MapName;
-            var zonesPath = Path.Combine(ModuleDirectory, "zones");
-            
-            commandInfo.ReplyToCommand($"Map: {mapName}");
-            commandInfo.ReplyToCommand($"Module directory: {ModuleDirectory}");
-            commandInfo.ReplyToCommand($"Zones directory: {zonesPath}");
-            commandInfo.ReplyToCommand($"Zones in memory: {_zoneManager?.Zones.Count ?? 0}");
-            
-            var filePath = Path.Combine(zonesPath, $"{mapName}.json");
-            commandInfo.ReplyToCommand($"Expected file: {filePath}");
-            commandInfo.ReplyToCommand($"File exists: {File.Exists(filePath)}");
-            
-            if (Directory.Exists(zonesPath))
-            {
-                var files = Directory.GetFiles(zonesPath, "*.json");
-                commandInfo.ReplyToCommand($"JSON files found: {files.Length}");
-                foreach (var file in files)
-                {
-                    commandInfo.ReplyToCommand($"- {Path.GetFileName(file)}");
-                }
-            }
-            else
-            {
-                commandInfo.ReplyToCommand($"Zones directory doesn't exist!");
-            }
-        }
-
         [ConsoleCommand("css_redrawzones", "Redraws all zones.")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
@@ -2672,70 +2773,65 @@ namespace Lockpoint
             commandInfo.ReplyToCommand($"Redrawn {_zoneManager.Zones.Count} zones");
         }
 
-        [ConsoleCommand("css_testzone", "Test if you're in a zone.")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandTestZone(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            if (player == null || !player.IsValid || player.PlayerPawn?.Value == null)
-            {
-                commandInfo.ReplyToCommand("Invalid player.");
-                return;
-            }
-
-            var playerPos = new CSVector(
-                player.PlayerPawn.Value.AbsOrigin!.X,
-                player.PlayerPawn.Value.AbsOrigin!.Y,
-                player.PlayerPawn.Value.AbsOrigin!.Z
-            );
-
-            commandInfo.ReplyToCommand($"Your position: {playerPos.X:F1}, {playerPos.Y:F1}, {playerPos.Z:F1}");
-            commandInfo.ReplyToCommand($"Total completed zones: {_zoneManager?.Zones.Count ?? 0}");
-
-            foreach (var zone in _zoneManager?.Zones ?? new List<Zone>())            {
-                bool inZone = zone.IsPlayerInZone(playerPos);
-                commandInfo.ReplyToCommand($"Zone '{zone.Name}': {(inZone ? "INSIDE" : "OUTSIDE")}");
-                
-                if (zone.Points.Count > 0)
-                {
-                    var firstPoint = zone.Points[0];
-                    var distance = Math.Sqrt(
-                        Math.Pow(playerPos.X - firstPoint.X, 2) +
-                        Math.Pow(playerPos.Y - firstPoint.Y, 2)
-                    );
-                    commandInfo.ReplyToCommand($"Distance to first point: {distance:F1}");
-                }
-            }
-        }
-
-        [ConsoleCommand("css_selectzone", "Selects a specific zone by name.")]
-        [CommandHelper(minArgs: 1, usage: "[ZONE_NAME]", whoCanExecute: CommandUsage.CLIENT_ONLY)]
+        [ConsoleCommand("css_selectzone", "Select a specific zone by ID or name for testing (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<zone_id_or_name>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
         [RequiresPermissions("@css/root")]
         public void OnCommandSelectZone(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            var zoneName = commandInfo.GetArg(1);
-            var zone = _zoneManager?.Zones.FirstOrDefault(z => z.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase));
-            
-            if (zone != null)
+            if (_gamePhase != GamePhase.Active)
             {
-                // Clear all existing visualizations
-                _zoneVisualization?.ClearZoneVisualization();
-                
-                // Set and draw the selected zone
-                activeZone = zone;
-                _zoneVisualization?.DrawZone(activeZone);
-                
-                commandInfo.ReplyToCommand($"Selected and drew zone: {zone.Name}");
-                Server.PrintToConsole($"[Lockpoint] Manually selected zone: {zone.Name}");
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Game must be active to select zones!{ChatColors.Default}");
+                return;
+            }
+
+            var zoneIdentifier = commandInfo.GetArg(1);
+            Zone? selectedZone = null;
+
+            // Try to parse as ID first
+            if (int.TryParse(zoneIdentifier, out int zoneId))
+            {
+                selectedZone = _zoneManager?.Zones?.FirstOrDefault(z => z.Id == zoneId);
             }
             else
             {
-                commandInfo.ReplyToCommand($"Zone '{zoneName}' not found");
-                
-                // List available zones
-                var availableZones = string.Join(", ", _zoneManager?.Zones.Select(z => z.Name) ?? new List<string>());
-                commandInfo.ReplyToCommand($"Available zones: {availableZones}");
+                // Search by name
+                selectedZone = _zoneManager?.Zones?.FirstOrDefault(z => z.Name.Equals(zoneIdentifier, StringComparison.OrdinalIgnoreCase));
             }
+
+            if (selectedZone == null)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Zone '{zoneIdentifier}' not found!{ChatColors.Default}");
+                
+                // Show available zones
+                if (_zoneManager?.Zones?.Count > 0)
+                {
+                    var zoneList = string.Join(", ", _zoneManager.Zones.Select(z => $"{z.Id}:{z.Name}"));
+                    commandInfo.ReplyToCommand($"{ChatColors.Yellow}Available zones: {zoneList}{ChatColors.Default}");
+                }
+                return;
+            }
+
+            // Clear current zone
+            _zoneVisualization?.ClearZoneVisualization();
+            
+            // Set new active zone
+            activeZone = selectedZone;
+            activeZone.PlayersInZone.Clear();
+            
+            // Reset capture times
+            _ctZoneTime = 0f;
+            _tZoneTime = 0f;
+            _zoneEmptyTime = 0f;
+            _zoneWasOccupied = false;
+            
+            // Draw the selected zone
+            _zoneVisualization?.DrawZone(activeZone);
+            
+            // Announce the zone change
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Zone '{activeZone.Name}' (ID: {activeZone.Id}) selected by admin!");
+            commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{activeZone.Name}' (ID: {activeZone.Id}) is now active!{ChatColors.Default}");
+            
+            Server.PrintToConsole($"[Lockpoint] Admin selected zone: {activeZone.Name} (ID: {activeZone.Id})");
         }
 
         [ConsoleCommand("css_clearzone", "Clears the active zone.")]
@@ -2747,26 +2843,6 @@ namespace Lockpoint
             _zoneVisualization?.ClearZoneVisualization();
             commandInfo.ReplyToCommand("Cleared active zone - no zones are now active");
             Server.PrintToConsole("[Lockpoint] Cleared active zone");
-        }
-
-        [ConsoleCommand("css_Lockpointstatus", "Shows current Lockpoint status.")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandLockpointStatus(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            if (activeZone == null)
-            {
-                commandInfo.ReplyToCommand("No active zone");
-                return;
-            }
-
-            var zoneState = activeZone.GetZoneState();
-            commandInfo.ReplyToCommand($"Zone: {activeZone.Name}");
-            commandInfo.ReplyToCommand($"State: {zoneState}");
-            commandInfo.ReplyToCommand($"CT Time: {_ctZoneTime:F1}s / {CAPTURE_TIME}s");
-            commandInfo.ReplyToCommand($"T Time: {_tZoneTime:F1}s / {CAPTURE_TIME}s");
-            commandInfo.ReplyToCommand($"Score: CT {_ctScore} - T {_tScore}");
-            commandInfo.ReplyToCommand($"Players in zone: {activeZone.PlayersInZone.Count}");
         }
 
         [ConsoleCommand("css_ready", "Mark yourself as ready to start the game.")]
@@ -3211,28 +3287,6 @@ namespace Lockpoint
             }
         }
 
-        [ConsoleCommand("css_spawninfo", "Show spawn point information for current zone (Admin only).")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandSpawnInfo(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            if (activeZone == null)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Red}No active zone.{ChatColors.Default}");
-                return;
-            }
-
-            var ctSpawns = activeZone.CounterTerroristSpawns.Count;
-            var tSpawns = activeZone.TerroristSpawns.Count;
-            
-            var availableCT = FindAvailableSpawnPoints(activeZone.CounterTerroristSpawns).Count;
-            var availableT = FindAvailableSpawnPoints(activeZone.TerroristSpawns).Count;
-            
-            commandInfo.ReplyToCommand($"{ChatColors.Green}Zone '{activeZone.Name}' Spawns:{ChatColors.Default}");
-            commandInfo.ReplyToCommand($"{ChatColors.Blue}CT: {ctSpawns} total, {availableCT} available{ChatColors.Default}");
-            commandInfo.ReplyToCommand($"{ChatColors.Red}T: {tSpawns} total, {availableT} available{ChatColors.Default}");
-        }
-
         [ConsoleCommand("css_edit", "Enter/exit edit mode (Admin only).")]
         [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
         [RequiresPermissions("@css/root")]
@@ -3406,40 +3460,6 @@ namespace Lockpoint
             catch (Exception ex)
             {
                 Server.PrintToConsole($"[Lockpoint] Error drawing zones for edit: {ex.Message}");
-            }
-        }
-
-        [ConsoleCommand("css_lockpoint_reload_config", "Reload Lockpoint configuration (Admin only).")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandReloadConfig(CCSPlayerController? player, CommandInfo commandInfo)
-        {
-            ExecuteLockpointConfiguration(ModuleDirectory);
-            
-            var message = "Lockpoint configuration reloaded!";
-            if (player?.IsValid == true)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
-            }
-            else
-            {
-                Server.PrintToConsole($"[Lockpoint] {message}");
-            }
-        }
-
-        [ConsoleCommand("css_configlockpoint", "Configure server settings for Lockpoint mode (Admin only).")]
-        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
-        [RequiresPermissions("@css/root")]
-        public void OnCommandConfigLockpoint(CCSPlayerController? player, CommandInfo commandInfo)
-        {   
-            var message = "Server configured for Lockpoint mode!";
-            if (player?.IsValid == true)
-            {
-                commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
-            }
-            else
-            {
-                Server.PrintToConsole($"[Lockpoint] {message}");
             }
         }
 
