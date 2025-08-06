@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.5.6";
+        public override string ModuleVersion => "0.7.0";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
 
@@ -27,12 +27,13 @@ namespace Lockpoint
         private string _gameEndMessage = "";
 
         
-        private const string LockpointCfgDirectory = "/cfg/";
-        private const string LockpointCfgPath = "/cfg/lockpoint.cfg";
+        private const string LockpointCfgDirectory = "/../../../../cfg/Lockpoint";
+        private const string LockpointCfgPath = $"{LockpointCfgDirectory}/lockpoint.cfg";
 
         private int _gameStartCountdown = 0;
         private CounterStrikeSharp.API.Modules.Timers.Timer? _countdownTimer = null;
         
+        private readonly HashSet<CCSPlayerController> _respawningPlayers = new();
         private readonly Dictionary<CCSPlayerController, DateTime> _playerDeathTimes = new();
         private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
         private readonly float RESPAWN_DELAY = 5.0f; // 5 seconds
@@ -169,6 +170,34 @@ namespace Lockpoint
             }
         }
 
+        private void GiveRandomUtility(CCSPlayerController player)
+        {
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null || !player.PawnIsAlive)
+                return;
+
+            try
+            {
+                var utilities = new string[]
+                {
+                    "weapon_smokegrenade",
+                    "weapon_hegrenade", 
+                    "weapon_molotov",
+                    "weapon_incgrenade"
+                };
+
+                var random = new Random();
+                var selectedUtility = utilities[random.Next(utilities.Length)];
+                
+                player.GiveNamedItem(selectedUtility);
+                
+                Server.PrintToConsole($"[Lockpoint] Gave {selectedUtility} to {player.PlayerName}");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error giving utility to {player.PlayerName}: {ex.Message}");
+            }
+        }
+
         private void GivePlayerEquipment(CCSPlayerController player)
         {
             if (player?.IsValid != true || player.PlayerPawn?.Value == null || !player.PawnIsAlive)
@@ -219,7 +248,10 @@ namespace Lockpoint
 
             foreach (var player in allPlayers)
             {
-                player.PrintToCenter(_gameEndMessage);
+                if (!_respawningPlayers.Contains(player) && player.PawnIsAlive)
+                {
+                    player.PrintToCenter(_gameEndMessage);
+                }
             }
         }
 
@@ -275,7 +307,7 @@ namespace Lockpoint
         // === WEAPON SETTINGS ===
         // Remove map weapons and default loadouts (we handle weapons via code)
         mp_weapons_allow_map_placed 0
-        mp_ct_default_primary ""weapon_m4a1""
+        mp_ct_default_primary ""weapon_ak47""
         mp_t_default_primary ""weapon_ak47""
         mp_ct_default_secondary ""weapon_deagle""
         mp_t_default_secondary ""weapon_deagle""
@@ -318,10 +350,11 @@ namespace Lockpoint
         mp_autokick 0
         mp_friendlyfire 1
         spec_replay_enable 1
-        mp_death_drop_gun 1
+        mp_death_drop_gun 0
         mp_death_drop_defuser 0
-        mp_death_drop_grenade 1
+        mp_death_drop_grenade 0
         mp_free_armor 2
+        sv_infinite_ammo 2
 
         echo [Lockpoint] Configuration loaded successfully!
         ";
@@ -334,7 +367,7 @@ namespace Lockpoint
                 }
 
                 // Execute the configuration file
-                Server.ExecuteCommand("exec lockpoint.cfg");
+                Server.ExecuteCommand($"exec Lockpoint/lockpoint.cfg");
                 Server.PrintToConsole("[Lockpoint] Executed lockpoint.cfg");
             }
             catch (Exception ex)
@@ -962,7 +995,10 @@ namespace Lockpoint
 
                 foreach (var player in allPlayers)
                 {
-                    player.PrintToCenter(currentHudContent); // Changed from PrintToCenterHtml
+                    if (!_respawningPlayers.Contains(player) && player.PawnIsAlive)
+                    {
+                        player.PrintToCenter(currentHudContent);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1060,7 +1096,11 @@ namespace Lockpoint
             {
                 if (player?.IsValid == true)
                 {
-                    player.PrintToCenter(warmupMessage);
+                    if (!_respawningPlayers.Contains(player) && player.PawnIsAlive)
+                    {
+                        // Your warmup HUD content here
+                        player.PrintToCenter("🔥 LOCKPOINT WARMUP 🔥\nWaiting for admin to start...");
+                    }
                 }
             }
         }
@@ -1701,7 +1741,6 @@ namespace Lockpoint
             
             if (player?.IsValid != true || player.IsBot)
                 return HookResult.Continue;
-
             try
             {
                 if (_gamePhase == GamePhase.Warmup)
@@ -1721,6 +1760,7 @@ namespace Lockpoint
                 {
                     // 5-second respawn timer during active game
                     _playerDeathTimes[player] = DateTime.Now;
+                    _respawningPlayers.Add(player);
                     
                     // Clear any existing respawn timer for this player
                     if (_respawnTimers.ContainsKey(player))
@@ -1775,12 +1815,15 @@ namespace Lockpoint
             if (player?.IsValid != true || player.IsBot)
                 return HookResult.Continue;
 
+            _respawningPlayers.Remove(player);
+
             // Give equipment after spawn with a small delay
             Task.Delay(100).ContinueWith(_ => 
             {
                 Server.NextFrame(() => 
                 {
                     GivePlayerEquipment(player);
+                    GiveRandomUtility(player);
                 });
             });
 
