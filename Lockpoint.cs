@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.5.5";
+        public override string ModuleVersion => "0.5.6";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
 
@@ -1370,8 +1370,21 @@ namespace Lockpoint
                     return;
                 }
 
-                // Select a random zone
+                // Get available zones (exclude the previous zone if there are multiple zones)
                 var availableZones = _zoneManager.Zones.ToList();
+                
+                if (availableZones.Count > 1 && _previousZone != null)
+                {
+                    availableZones = availableZones.Where(z => z != _previousZone).ToList();
+                }
+
+                if (availableZones.Count == 0)
+                {
+                    Server.PrintToConsole("[Lockpoint] No available zones after filtering previous zone");
+                    return;
+                }
+
+                // Select a random zone from available zones
                 var random = new Random();
                 var selectedZone = availableZones[random.Next(availableZones.Count)];
                 
@@ -1390,6 +1403,9 @@ namespace Lockpoint
                 
                 // Announce the new zone
                 Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - Zone '{activeZone.Name}' is now active!");
+                
+                // Store as previous zone for next selection
+                _previousZone = activeZone;
                 
                 Server.PrintToConsole($"[Lockpoint] New active zone: {activeZone.Name}");
             }
@@ -2980,6 +2996,7 @@ namespace Lockpoint
             _tZoneTime = 0f;
             _zoneEmptyTime = 0f;
             _zoneWasOccupied = false;
+            _previousZone = null;
             activeZone = null;
 
             // Set to active phase
