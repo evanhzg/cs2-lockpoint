@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.5.1";
+        public override string ModuleVersion => "0.5.2";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
 
@@ -166,6 +166,27 @@ namespace Lockpoint
             catch (Exception ex)
             {
                 Server.PrintToConsole($"[Lockpoint] Error in lockpoint update: {ex.Message}");
+            }
+        }
+
+        private void GivePlayerEquipment(CCSPlayerController player)
+        {
+            if (player?.IsValid != true || player.PlayerPawn?.Value == null || !player.PawnIsAlive)
+                return;
+
+            try
+            {
+                // Give kevlar + helmet
+                player.PlayerPawn.Value.ArmorValue = 100;
+                player.PlayerPawn.Value.bHasHelmet = true;
+                
+                // Update the player's equipment
+                Utilities.SetStateChanged(player.PlayerPawn.Value, "CCSPlayerPawn", "m_ArmorValue");
+                Utilities.SetStateChanged(player.PlayerPawn.Value, "CCSPlayerPawn", "m_bHasHelmet");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[Lockpoint] Error giving equipment to {player.PlayerName}: {ex.Message}");
             }
         }
 
@@ -1735,6 +1756,45 @@ namespace Lockpoint
             return HookResult.Continue;
         }
 
+        [GameEventHandler]
+        public HookResult OnPlayerSpawn(EventPlayerSpawn @event, GameEventInfo info)
+        {
+            var player = @event.Userid;
+            if (player?.IsValid != true || player.IsBot)
+                return HookResult.Continue;
+
+            // Give equipment after spawn with a small delay
+            Server.NextFrame(() => 
+            {
+                Server.NextFrame(() => 
+                {
+                    GivePlayerEquipment(player);
+                });
+            });
+
+            return HookResult.Continue;
+        }
+
+        // Also give equipment when players join a team
+        [GameEventHandler]
+        public HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
+        {
+            var player = @event.Userid;
+            if (player?.IsValid != true || player.IsBot)
+                return HookResult.Continue;
+
+            // Give equipment after team change with a delay
+            Server.NextFrame(() => 
+            {
+                if (player.PawnIsAlive)
+                {
+                    GivePlayerEquipment(player);
+                }
+            });
+
+            return HookResult.Continue;
+        }
+
         private void RespawnPlayerAtRandomSpawn(CCSPlayerController player)
         {
             Server.NextFrame(() =>
@@ -1747,18 +1807,21 @@ namespace Lockpoint
                     // Try to respawn the player first
                     player.Respawn();
                     
-                    // Then teleport to a deathmatch spawn point after a small delay
-                    AddTimer(0.2f, () =>
+                    Server.NextFrame(() => 
                     {
-                        if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
+                        Server.NextFrame(() => 
                         {
-                            var randomSpawn = GetDeathmatchSpawn(); // Use deathmatch spawns preferentially
-                            if (randomSpawn != null)
+                            if (player?.IsValid == true && player.PawnIsAlive && player.PlayerPawn?.Value != null)
                             {
-                                player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                                Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to deathmatch spawn");
+                                var randomSpawn = GetDeathmatchSpawn(); // Use deathmatch spawns preferentially
+                                if (randomSpawn != null)
+                                {
+                                    player.PlayerPawn.Value.Teleport(randomSpawn, new QAngle(0, 0, 0), new Vector(0, 0, 0));
+                                    Server.PrintToConsole($"[Lockpoint] Teleported {player.PlayerName} to deathmatch spawn");
+                                }
                             }
-                        }
+                            GivePlayerEquipment(player);
+                        });
                     });
                     
                     player.PrintToChat($"{ChatColors.Green}Respawned instantly (warmup mode)!{ChatColors.Default}");
