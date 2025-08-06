@@ -19,7 +19,7 @@ namespace Lockpoint
     public class Lockpoint : BasePlugin
     {
         public override string ModuleName => "Lockpoint";
-        public override string ModuleVersion => "0.5.2";
+        public override string ModuleVersion => "0.5.5";
         public override string ModuleAuthor => "evanhh";
         public override string ModuleDescription => "Lockpoint game mode for CS2";
 
@@ -65,9 +65,9 @@ namespace Lockpoint
         private System.Timers.Timer? _LockpointTimer;
         private System.Timers.Timer? _hudTimer;
         private Zone? _previousZone = null;
-        private readonly float CAPTURE_TIME = 20f; // 10 seconds to capture
+        private readonly float CAPTURE_TIME = 20f; // 20 seconds to capture
         private const float TIMER_INTERVAL = 100f; // Back to 100ms
-        private const float HUD_UPDATE_INTERVAL = 500f; // Update HUD every 500ms instead of every timer tick
+        private const float HUD_UPDATE_INTERVAL = 50f; // Update HUD every 500ms instead of every timer tick
         private const int WINNING_SCORE = 3; // First team to 3 captures wins
         private bool _waitingForNewZone = false;
         private DateTime _zoneResetTime;
@@ -176,13 +176,8 @@ namespace Lockpoint
 
             try
             {
-                // Give kevlar + helmet
-                player.PlayerPawn.Value.ArmorValue = 100;
-                player.PlayerPawn.Value.bHasHelmet = true;
-                
-                // Update the player's equipment
-                Utilities.SetStateChanged(player.PlayerPawn.Value, "CCSPlayerPawn", "m_ArmorValue");
-                Utilities.SetStateChanged(player.PlayerPawn.Value, "CCSPlayerPawn", "m_bHasHelmet");
+                // Give armor and helmet using console commands
+                Server.ExecuteCommand($"mp_free_armor 2");
             }
             catch (Exception ex)
             {
@@ -321,11 +316,12 @@ namespace Lockpoint
         // Other useful settings
         mp_forcecamera 1
         mp_autokick 0
-        mp_friendlyfire 0
-        spec_replay_enable 0
+        mp_friendlyfire 1
+        spec_replay_enable 1
         mp_death_drop_gun 1
         mp_death_drop_defuser 0
         mp_death_drop_grenade 1
+        mp_free_armor 2
 
         echo [Lockpoint] Configuration loaded successfully!
         ";
@@ -1764,7 +1760,7 @@ namespace Lockpoint
                 return HookResult.Continue;
 
             // Give equipment after spawn with a small delay
-            Server.NextFrame(() => 
+            Task.Delay(100).ContinueWith(_ => 
             {
                 Server.NextFrame(() => 
                 {
@@ -1775,7 +1771,6 @@ namespace Lockpoint
             return HookResult.Continue;
         }
 
-        // Also give equipment when players join a team
         [GameEventHandler]
         public HookResult OnPlayerTeam(EventPlayerTeam @event, GameEventInfo info)
         {
@@ -1784,12 +1779,15 @@ namespace Lockpoint
                 return HookResult.Continue;
 
             // Give equipment after team change with a delay
-            Server.NextFrame(() => 
+            Task.Delay(200).ContinueWith(_ => 
             {
-                if (player.PawnIsAlive)
+                Server.NextFrame(() => 
                 {
-                    GivePlayerEquipment(player);
-                }
+                    if (player.PawnIsAlive)
+                    {
+                        GivePlayerEquipment(player);
+                    }
+                });
             });
 
             return HookResult.Continue;
