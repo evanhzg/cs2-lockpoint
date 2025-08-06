@@ -289,6 +289,8 @@ namespace Lockpoint
         tv_delay 0
         mp_teammatchstat_txt """"
         mp_teammatchstat_holdtime 0
+        cl_versus_intro false
+        mp_team_intro_time 0
         mp_warmup_pausetimer 0
 
         // Basic game mode
