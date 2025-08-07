@@ -36,8 +36,9 @@ namespace Lockpoint
         private readonly HashSet<CCSPlayerController> _respawningPlayers = new();
         private readonly Dictionary<CCSPlayerController, DateTime> _playerDeathTimes = new();
         private readonly Dictionary<CCSPlayerController, System.Timers.Timer> _respawnTimers = new();
-        private readonly float RESPAWN_DELAY = 5.0f; // 5 seconds
-
+        private float _captureTime = 20f;
+        private float _respawnDelay = 5.0f;
+        private double _newZoneDelay = 5.0;
         private float _zoneEmptyTime = 0f; // Track how long zone has been empty
         private const float ZONE_DECAY_DELAY = 5.0f; // 5 seconds before decay starts
         private bool _zoneWasOccupied = false; // Track if zone was previously occupied
@@ -66,7 +67,6 @@ namespace Lockpoint
         private System.Timers.Timer? _LockpointTimer;
         private System.Timers.Timer? _hudTimer;
         private Zone? _previousZone = null;
-        private readonly float CAPTURE_TIME = 20f; // 20 seconds to capture
         private const float TIMER_INTERVAL = 100f; // Back to 100ms
         private const float HUD_UPDATE_INTERVAL = 50f; // Update HUD every 500ms instead of every timer tick
         private const int WINNING_SCORE = 3; // First team to 3 captures wins
@@ -75,7 +75,6 @@ namespace Lockpoint
         private bool _waitingForNewZone = false;
         private DateTime _zoneResetTime;
         private string _lastCaptureTeam = "";
-        private readonly double _newZoneTimer = 5.0; // 5 seconds
         private bool _isCountingDown = false;
         private string _countdownMessage = "";
 
@@ -557,11 +556,11 @@ namespace Lockpoint
                 }
 
                 // Check for capture
-                if (_ctZoneTime >= CAPTURE_TIME)
+                if (_ctZoneTime >= _captureTime)
                 {
                     OnZoneCaptured("CT");
                 }
-                else if (_tZoneTime >= CAPTURE_TIME)
+                else if (_tZoneTime >= _captureTime)
                 {
                     OnZoneCaptured("T");
                 }
@@ -1003,11 +1002,11 @@ namespace Lockpoint
                     }
 
                     // Check for zone capture
-                    if (_ctZoneTime >= CAPTURE_TIME)
+                    if (_ctZoneTime >= _captureTime)
                     {
                         OnZoneCaptured("CT");
                     }
-                    else if (_tZoneTime >= CAPTURE_TIME)
+                    else if (_tZoneTime >= _captureTime)
                     {
                         OnZoneCaptured("T");
                     }
@@ -1059,8 +1058,8 @@ namespace Lockpoint
                 else
                 {
                     // Show zone capture progress - use simple text formatting
-                    var ctProgress = (_ctZoneTime / CAPTURE_TIME) * 100;
-                    var tProgress = (_tZoneTime / CAPTURE_TIME) * 100;
+                    var ctProgress = (_ctZoneTime / _captureTime) * 100;
+                    var tProgress = (_tZoneTime / _captureTime) * 100;
                     var zoneState = activeZone.GetZoneState();
 
                     string stateText = zoneState switch
@@ -1229,8 +1228,8 @@ namespace Lockpoint
             // Rest of the HUD logic stays the same...
             if (activeZone != null)
             {
-                var ctProgress = (_ctZoneTime / CAPTURE_TIME) * 100f;
-                var tProgress = (_tZoneTime / CAPTURE_TIME) * 100f;
+                var ctProgress = (_ctZoneTime / _captureTime) * 100f;
+                var tProgress = (_tZoneTime / _captureTime) * 100f;
 
                 var ctPlayersInZone = activeZone.PlayersInZone?.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist) ?? 0;
                 var tPlayersInZone = activeZone.PlayersInZone?.Count(p => p.TeamNum == (byte)CsTeam.Terrorist) ?? 0;
@@ -1335,7 +1334,7 @@ namespace Lockpoint
 
             // Set waiting state
             _waitingForNewZone = true;
-            _zoneResetTime = DateTime.Now.AddSeconds(_newZoneTimer);
+            _zoneResetTime = DateTime.Now.AddSeconds(_newZoneDelay);
 
             activeZone = null; // Clear active zone immediately
 
@@ -1878,7 +1877,7 @@ namespace Lockpoint
                         _respawnTimers.Remove(player);
                     }
 
-                    Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} died, will respawn in {RESPAWN_DELAY} seconds");
+                    Server.PrintToConsole($"[Lockpoint] Player {player.PlayerName} died, will respawn in {_respawnDelay} seconds");
 
                     // Create respawn timer with null check
                     var respawnTimer = new System.Timers.Timer(100); // Update every 100ms for smooth countdown
@@ -1899,7 +1898,7 @@ namespace Lockpoint
                     _respawnTimers[player] = respawnTimer;
 
                     // Schedule the actual respawn with null check
-                    AddTimer(RESPAWN_DELAY, () =>
+                    AddTimer(_respawnDelay, () =>
                     {
                         if (player?.IsValid == true)
                         {
@@ -2122,7 +2121,7 @@ namespace Lockpoint
                     }
 
                     var timeSinceDeath = (DateTime.Now - _playerDeathTimes[player]).TotalSeconds;
-                    var remainingTime = Math.Max(0, RESPAWN_DELAY - timeSinceDeath);
+                    var remainingTime = Math.Max(0, _respawnDelay - timeSinceDeath);
 
                     if (remainingTime <= 0)
                     {
@@ -3888,6 +3887,149 @@ namespace Lockpoint
             player.PrintToChat($"Use {ChatColors.LightBlue}!help{ChatColors.Default} for all commands");
         }
 
+        [ConsoleCommand("css_capturetime", "Set zone capture time in seconds (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<seconds>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandCaptureTime(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!float.TryParse(commandInfo.GetArg(1), out float seconds) || seconds <= 0)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Invalid time! Use a positive number (e.g., 20.5){ChatColors.Default}");
+                return;
+            }
+
+            _captureTime = seconds;
+            
+            var message = $"Zone capture time set to {_captureTime:F1} seconds";
+            commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}{message}{ChatColors.Default}");
+            Server.PrintToConsole($"[Lockpoint] Capture time changed to {_captureTime:F1}s by {(player?.PlayerName ?? "Server")}");
+        }
+
+        [ConsoleCommand("css_respawntime", "Set respawn delay in seconds (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<seconds>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandRespawnTime(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!float.TryParse(commandInfo.GetArg(1), out float seconds) || seconds < 0)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Invalid time! Use 0 or higher (e.g., 5.0, use 0 for instant){ChatColors.Default}");
+                return;
+            }
+
+            _respawnDelay = seconds;
+            
+            var message = _respawnDelay == 0 
+                ? "Respawn set to instant"
+                : $"Respawn delay set to {_respawnDelay:F1} seconds";
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}{message}{ChatColors.Default}");
+            Server.PrintToConsole($"[Lockpoint] Respawn time changed to {_respawnDelay:F1}s by {(player?.PlayerName ?? "Server")}");
+        }
+
+        [ConsoleCommand("css_zonedelay", "Set delay before next zone appears in seconds (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<seconds>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandZoneDelay(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            if (!double.TryParse(commandInfo.GetArg(1), out double seconds) || seconds < 0)
+            {
+                commandInfo.ReplyToCommand($"{ChatColors.Red}Invalid time! Use 0 or higher (e.g., 5.0, use 0 for instant){ChatColors.Default}");
+                return;
+            }
+
+            _newZoneDelay = seconds;
+            
+            var message = _newZoneDelay == 0 
+                ? "New zone will appear instantly after capture"
+                : $"New zone delay set to {_newZoneDelay:F1} seconds";
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}{message}{ChatColors.Default}");
+            Server.PrintToConsole($"[Lockpoint] Zone delay changed to {_newZoneDelay:F1}s by {(player?.PlayerName ?? "Server")}");
+        }
+
+        [ConsoleCommand("css_gamesettings", "Show current game timing settings.")]
+        [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        public void OnCommandGameSettings(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var settings = new[]
+            {
+                $"Zone Capture Time: {_captureTime:F1} seconds",
+                $"Respawn Delay: {(_respawnDelay == 0 ? "Instant" : $"{_respawnDelay:F1} seconds")}",
+                $"New Zone Delay: {(_newZoneDelay == 0 ? "Instant" : $"{_newZoneDelay:F1} seconds")}",
+                $"Winning Score: {WINNING_SCORE} captures",
+                $"Zone Detection Buffer: {ZONE_DETECTION_BUFFER:F1} units"
+            };
+
+            if (player?.IsValid == true)
+            {
+                player.PrintToChat($"{ChatColors.Green}[Lockpoint Game Settings]{ChatColors.Default}");
+                foreach (var setting in settings)
+                {
+                    player.PrintToChat($"{ChatColors.Yellow}• {setting}{ChatColors.Default}");
+                }
+                
+                if (AdminManager.PlayerHasPermissions(player, "@css/root"))
+                {
+                    player.PrintToChat($"{ChatColors.Orange}Use !capturetime, !respawntime, !zonedelay to adjust{ChatColors.Default}");
+                }
+            }
+            else
+            {
+                Server.PrintToConsole("[Lockpoint Game Settings]");
+                foreach (var setting in settings)
+                {
+                    Server.PrintToConsole($"• {setting}");
+                }
+            }
+        }
+
+        [ConsoleCommand("css_quickconfig", "Quick preset configurations (Admin only).")]
+        [CommandHelper(minArgs: 1, usage: "<fast|normal|slow|instant>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+        [RequiresPermissions("@css/root")]
+        public void OnCommandQuickConfig(CCSPlayerController? player, CommandInfo commandInfo)
+        {
+            var preset = commandInfo.GetArg(1).ToLower();
+            
+            switch (preset)
+            {
+                case "fast":
+                    _captureTime = 10f;
+                    _respawnDelay = 2f;
+                    _newZoneDelay = 2.0;
+                    break;
+                    
+                case "normal":
+                    _captureTime = 20f;
+                    _respawnDelay = 5f;
+                    _newZoneDelay = 5.0;
+                    break;
+                    
+                case "slow":
+                    _captureTime = 30f;
+                    _respawnDelay = 8f;
+                    _newZoneDelay = 8.0;
+                    break;
+                    
+                case "instant":
+                    _captureTime = 15f;
+                    _respawnDelay = 0f;
+                    _newZoneDelay = 0.0;
+                    break;
+                    
+                default:
+                    commandInfo.ReplyToCommand($"{ChatColors.Red}Invalid preset! Use: fast, normal, slow, or instant{ChatColors.Default}");
+                    return;
+            }
+            
+            var message = $"Applied '{preset}' preset: Capture={_captureTime:F0}s, Respawn={(_respawnDelay == 0 ? "instant" : $"{_respawnDelay:F0}s")}, Zone Delay={(_newZoneDelay == 0 ? "instant" : $"{_newZoneDelay:F0}s")}";
+            
+            commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
+            Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}{message}{ChatColors.Default}");
+            Server.PrintToConsole($"[Lockpoint] Applied {preset} preset by {(player?.PlayerName ?? "Server")}");
+        }
         #endregion
     }
 }
