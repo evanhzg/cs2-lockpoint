@@ -22,14 +22,14 @@ namespace Lockpoint.Services
         {
             _isEditMode = editMode;
             _editingZone = editingZone;
-            
+
             // Redraw the zone with appropriate color if there's an editing zone
             if (_editingZone != null)
             {
                 DrawZone(_editingZone);
             }
         }
-        
+
         public void DrawZone(Zone zone)
         {
             if (zone?.Points == null || zone.Points.Count < 3)
@@ -41,10 +41,10 @@ namespace Lockpoint.Services
             ClearZoneBeams(zone);
 
             var beams = new List<CBeam>();
-            
+
             // Start with default green color
             Color zoneColor = Color.FromArgb(255, 0, 255, 0); // Green default
-            
+
             // Override to yellow if in edit mode
             if (_isEditMode && _editingZone == zone)
             {
@@ -55,13 +55,13 @@ namespace Lockpoint.Services
             {
                 Server.PrintToConsole($"[ZoneVisualization] Drawing zone '{zone.Name}' in normal mode (green)");
             }
-            
+
             // Draw lines connecting all points in sequence, including closing the loop
             for (int i = 0; i < zone.Points.Count; i++)
             {
                 var currentPoint = zone.Points[i];
                 var nextPoint = zone.Points[(i + 1) % zone.Points.Count]; // Wrap around to first point
-                
+
                 var beam = CreateBorderBeam(currentPoint, nextPoint, zoneColor);
                 if (beam != null)
                 {
@@ -94,7 +94,7 @@ namespace Lockpoint.Services
             }
 
             Color newColor;
-            
+
             // If in edit mode and this is the editing zone, always yellow
             if (_isEditMode && _editingZone == zone)
             {
@@ -128,16 +128,16 @@ namespace Lockpoint.Services
 
             // Clear existing beams
             ClearZoneBeams(zone);
-            
+
             // Redraw with new color
             var beams = new List<CBeam>();
-            
+
             // Draw lines connecting all points in sequence, including closing the loop
             for (int i = 0; i < zone.Points.Count; i++)
             {
                 var currentPoint = zone.Points[i];
                 var nextPoint = zone.Points[(i + 1) % zone.Points.Count]; // Wrap around to first point
-                
+
                 var beam = CreateBorderBeam(currentPoint, nextPoint, newColor);
                 if (beam != null)
                 {
@@ -178,10 +178,10 @@ namespace Lockpoint.Services
             beam.EndPos.Y = position.Y;
             beam.EndPos.Z = position.Z + 2.0f;
 
-            beam.Teleport(new CSVector(position.X, position.Y, position.Z - 1.0f), 
-                         new QAngle(0, 0, 0), 
+            beam.Teleport(new CSVector(position.X, position.Y, position.Z - 1.0f),
+                         new QAngle(0, 0, 0),
                          new CSVector(0, 0, 0));
-            
+
             beam.DispatchSpawn();
             return beam;
         }
@@ -204,14 +204,14 @@ namespace Lockpoint.Services
                 beam.Flags = 0;              // No special effects
                 beam.BeamType = BeamType_t.BEAM_POINTS;
                 beam.FadeLength = 0;         // No fade
-                
+
                 // Fix the default color - green for normal zones, yellow for edit mode
                 var beamColor = customColor ?? Color.FromArgb(255, 0, 255, 0); // Green default
                 beam.Render = beamColor;
 
                 // Don't lower the beam too much - keep it more visible
                 var lowerHeight = 1.0f; // Only lower by 2 units instead of 5
-                
+
                 // Set end position (slightly lowered)
                 beam.EndPos.X = end.X;
                 beam.EndPos.Y = end.Y;
@@ -220,7 +220,7 @@ namespace Lockpoint.Services
                 // Set start position (slightly lowered) via teleport
                 var startPos = new Vector(start.X, start.Y, start.Z - lowerHeight);
                 beam.Teleport(startPos, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                
+
                 beam.DispatchSpawn();
                 return beam;
             }
@@ -260,19 +260,19 @@ namespace Lockpoint.Services
 
             // Clear existing spawn visualizations first
             ClearSpawnPoints();
-            
+
             _currentSpawnZone = zone;
 
             // Draw CT spawns (blue crosses)
             foreach (var spawn in zone.CounterTerroristSpawns)
             {
-                DrawSpawnMarker(spawn, Color.Blue);
+                DrawSpawnMarker(spawn.Position, Color.Blue);
             }
 
             // Draw T spawns (red crosses)
             foreach (var spawn in zone.TerroristSpawns)
             {
-                DrawSpawnMarker(spawn, Color.Red);
+                DrawSpawnMarker(spawn.Position, Color.Red);
             }
 
             Server.PrintToConsole($"[ZoneVisualization] Drew {zone.CounterTerroristSpawns.Count} CT and {zone.TerroristSpawns.Count} T spawn points for zone '{zone.Name}'");
@@ -295,7 +295,7 @@ namespace Lockpoint.Services
                 }
                 spawnBeams.Clear();
                 _currentSpawnZone = null;
-                
+
                 Server.PrintToConsole("[ZoneVisualization] Cleared spawn point visualizations");
             }
             catch (Exception ex)
@@ -308,19 +308,19 @@ namespace Lockpoint.Services
         {
             // Create a smaller, less intrusive cross marker
             var size = 8.0f; // Smaller cross
-            
+
             // Horizontal line
             var start1 = new Vector(position.X - size, position.Y, position.Z + 2);
             var end1 = new Vector(position.X + size, position.Y, position.Z + 2);
-            
+
             // Vertical line  
             var start2 = new Vector(position.X, position.Y - size, position.Z + 2);
             var end2 = new Vector(position.X, position.Y + size, position.Z + 2);
-            
+
             // Shorter vertical marker
             var verticalStart = new Vector(position.X, position.Y, position.Z);
             var verticalEnd = new Vector(position.X, position.Y, position.Z + 15); // Shorter
-            
+
             // Draw the cross
             DrawSpawnBeam(start1, end1, color);
             DrawSpawnBeam(start2, end2, color);
@@ -344,7 +344,7 @@ namespace Lockpoint.Services
                 beam.Flags = 0;
                 beam.BeamType = BeamType_t.BEAM_POINTS;
                 beam.FadeLength = 0;
-                
+
                 // Solid colors for spawn points
                 beam.Render = Color.FromArgb(255, color.R, color.G, color.B);
 
@@ -353,7 +353,7 @@ namespace Lockpoint.Services
                 beam.EndPos.Z = end.Z;
 
                 beam.Teleport(start, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                
+
                 beam.DispatchSpawn();
                 spawnBeams.Add(beam);
             }
@@ -380,7 +380,7 @@ namespace Lockpoint.Services
 
             // Also clear spawn points
             ClearSpawnPoints();
-            
+
             Server.PrintToConsole("[ZoneVisualization] Cleared all zone visualizations");
         }
 

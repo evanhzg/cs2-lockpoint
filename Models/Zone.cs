@@ -14,8 +14,8 @@ namespace Lockpoint.Models
         public List<CSVector> Points { get; set; } = new();
         public List<CCSPlayerController> PlayersInZone { get; set; } = new();
 
-        public List<CSVector> TerroristSpawns { get; set; } = new ();
-        public List<CSVector> CounterTerroristSpawns { get; set; } = new ();
+        public List<SpawnPoint> TerroristSpawns { get; set; } = new();
+        public List<SpawnPoint> CounterTerroristSpawns { get; set; } = new();
 
         public CSVector Center { get; set; } = new();
         public int ControllingTeam { get; set; } = -1;
@@ -31,8 +31,8 @@ namespace Lockpoint.Models
         {
             try
             {
-                PlayersInZone.RemoveAll(p => 
-                    p?.IsValid != true || 
+                PlayersInZone.RemoveAll(p =>
+                    p?.IsValid != true ||
                     p.Connected != PlayerConnectedState.PlayerConnected ||
                     p.PlayerPawn?.Value == null);
             }
@@ -48,9 +48,7 @@ namespace Lockpoint.Models
         {
             public CSVector Position { get; set; } = new();
             public QAngle ViewAngle { get; set; } = new();
-            
             public SpawnPoint() { }
-            
             public SpawnPoint(CSVector position, QAngle viewAngle)
             {
                 Position = position;
@@ -63,14 +61,14 @@ namespace Lockpoint.Models
             try
             {
                 // Filter out invalid players first and ensure they have valid entities
-                var validPlayers = PlayersInZone.Where(p => 
-                    p?.IsValid == true && 
+                var validPlayers = PlayersInZone.Where(p =>
+                    p?.IsValid == true &&
                     p.Connected == PlayerConnectedState.PlayerConnected &&
                     p.PlayerPawn?.Value != null).ToList();
-                
+
                 int ctCount = 0;
                 int tCount = 0;
-                
+
                 foreach (var player in validPlayers)
                 {
                     try
@@ -110,7 +108,7 @@ namespace Lockpoint.Models
         private bool IsPointInPolygon(CSVector point, List<CSVector> polygon)
         {
             if (polygon.Count < 3) return false;
-            
+
             bool inside = false;
             int j = polygon.Count - 1;
 

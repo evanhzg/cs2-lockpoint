@@ -9,7 +9,7 @@ using System.Reflection;
 
 namespace Lockpoint.Services
 {
-    public class ZoneManager 
+    public class ZoneManager
     {
         public List<Zone> Zones { get; set; } = new();
         private readonly string _zonesDirectory;
@@ -24,10 +24,10 @@ namespace Lockpoint.Services
         {
             _zonesDirectory = Path.Join(moduleDirectory, "zones");
             Zones = new List<Zone>();
-            
+
             Server.PrintToConsole($"[Lockpoint] Module directory: {moduleDirectory}");
             Server.PrintToConsole($"[Lockpoint] Zones directory: {_zonesDirectory}");
-            
+
             if (!Directory.Exists(_zonesDirectory))
             {
                 Directory.CreateDirectory(_zonesDirectory);
@@ -40,7 +40,7 @@ namespace Lockpoint.Services
             var zone = Zones.Find(z => z.Name == zoneName);
             if (zone != null)
             {
-                zone.Points.Add(position); 
+                zone.Points.Add(position);
             }
         }
 
@@ -54,10 +54,10 @@ namespace Lockpoint.Services
             try
             {
                 Server.PrintToConsole($"[ZoneManager] LoadZonesForMap called for map: {mapName}");
-                
+
                 // Clear existing zones first
                 Zones.Clear();
-                
+
                 var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
                 Server.PrintToConsole($"[ZoneManager] Looking for file: {filePath}");
                 Server.PrintToConsole($"[ZoneManager] File exists: {File.Exists(filePath)}");
@@ -65,7 +65,7 @@ namespace Lockpoint.Services
                 if (!File.Exists(filePath))
                 {
                     Server.PrintToConsole($"[ZoneManager] No zone file found for map {mapName}");
-                    
+
                     // Debug: Show what files exist
                     if (Directory.Exists(_zonesDirectory))
                     {
@@ -76,7 +76,7 @@ namespace Lockpoint.Services
                             Server.PrintToConsole($"[ZoneManager] - {Path.GetFileName(file)}");
                         }
                     }
-                    
+
                     // IMPORTANT: Return here instead of continuing to load zones
                     return;
                 }
@@ -88,18 +88,49 @@ namespace Lockpoint.Services
                     return;
                 }
 
-                var loadedZones = JsonSerializer.Deserialize<List<Zone>>(jsonContent);
-                if (loadedZones != null)
+                // Try to deserialize as new format first (MapZoneData)
+                try
                 {
-                    Zones = loadedZones;
-                    
+                    var loadedData = JsonSerializer.Deserialize<MapZoneData>(jsonContent);
+                    if (loadedData?.Zones != null)
+                    {
+                        Zones = loadedData.Zones.Select(zd => new Zone
+                        {
+                            Name = zd.Name,
+                            Points = zd.Points.Select(p => p.ToCSVector()).ToList(),
+                            TerroristSpawns = zd.TerroristSpawns.Select(sp => new Zone.SpawnPoint(
+                                sp.Position.ToCSVector(),
+                                sp.ViewAngle.ToQAngle()
+                            )).ToList(),
+                            CounterTerroristSpawns = zd.CounterTerroristSpawns.Select(sp => new Zone.SpawnPoint(
+                                sp.Position.ToCSVector(),
+                                sp.ViewAngle.ToQAngle()
+                            )).ToList()
+                        }).ToList();
+
+                        Server.PrintToConsole($"[ZoneManager] Successfully loaded {Zones.Count} zones with new format (includes view angles)");
+                    }
+                }
+                catch (JsonException)
+                {
+                    // If new format fails, try old format
+                    var loadedZones = JsonSerializer.Deserialize<List<Zone>>(jsonContent);
+                    if (loadedZones != null)
+                    {
+                        Zones = loadedZones;
+                        Server.PrintToConsole($"[ZoneManager] Successfully loaded {Zones.Count} zones with old format (no view angles)");
+                    }
+                }
+
+                if (Zones != null)
+                {
                     // Assign IDs after loading
                     for (int i = 0; i < Zones.Count; i++)
                     {
                         Zones[i].Id = i;
                     }
-                    
-                    Server.PrintToConsole($"[ZoneManager] Successfully loaded {Zones.Count} zones for map {mapName}");
+
+                    Server.PrintToConsole($"[ZoneManager] Total zones loaded: {Zones.Count}");
                 }
                 else
                 {
@@ -112,7 +143,6 @@ namespace Lockpoint.Services
                 Zones.Clear(); // Clear zones on error
             }
         }
-
         public void SaveZonesForMap(string mapName, List<Zone> zonesToSave)
         {
             var filePath = Path.Combine(_zonesDirectory, $"{mapName}.json");
@@ -151,8 +181,16 @@ namespace Lockpoint.Services
                     {
                         Name = zone.Name,
                         Points = zone.Points.Select(p => new SerializableVector(p)).ToList(),
-                        TerroristSpawns = zone.TerroristSpawns.Select(p => new SerializableVector(p)).ToList(),
-                        CounterTerroristSpawns = zone.CounterTerroristSpawns.Select(p => new SerializableVector(p)).ToList()
+                        TerroristSpawns = zone.TerroristSpawns.Select(sp => new SerializableSpawnPoint
+                        {
+                            Position = new SerializableVector(sp.Position),
+                            ViewAngle = new SerializableQAngle(sp.ViewAngle)
+                        }).ToList(),
+                        CounterTerroristSpawns = zone.CounterTerroristSpawns.Select(sp => new SerializableSpawnPoint
+                        {
+                            Position = new SerializableVector(sp.Position),
+                            ViewAngle = new SerializableQAngle(sp.ViewAngle)
+                        }).ToList()
                     }).ToList()
                 };
 
@@ -165,7 +203,7 @@ namespace Lockpoint.Services
 
                 var jsonContent = JsonSerializer.Serialize(mapData, options);
                 Server.PrintToConsole($"[Lockpoint] JSON serialized, length: {jsonContent.Length}");
-                
+
                 // Print first 100 chars of JSON for verification
                 var preview = jsonContent.Length > 100 ? jsonContent.Substring(0, 100) + "..." : jsonContent;
                 Server.PrintToConsole($"[Lockpoint] JSON preview: {preview}");
@@ -178,7 +216,7 @@ namespace Lockpoint.Services
                 {
                     var fileInfo = new FileInfo(filePath);
                     Server.PrintToConsole($"[Lockpoint] File verification: EXISTS, size: {fileInfo.Length} bytes");
-                    
+
                     // Read back the content to verify
                     var readBack = File.ReadAllText(filePath);
                     Server.PrintToConsole($"[Lockpoint] Read back length: {readBack.Length}");
@@ -198,7 +236,7 @@ namespace Lockpoint.Services
             }
         }
 
-        public Zone? GetZoneAtPosition(CSVector position) 
+        public Zone? GetZoneAtPosition(CSVector position)
         {
             foreach (var zone in Zones)
             {
