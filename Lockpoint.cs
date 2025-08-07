@@ -372,7 +372,7 @@ namespace Lockpoint
         mp_death_drop_defuser 0
         mp_death_drop_grenade 0
         mp_free_armor 2
-        sv_infinite_ammo 2
+        sv_infinite_ammo 0
 
         echo [Lockpoint] Configuration loaded successfully!
         ";
