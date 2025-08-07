@@ -595,7 +595,7 @@ namespace Lockpoint
                 activeZone?.PlayersInZone.Clear();
 
                 // Announce the capture
-                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Blue}{team}{ChatColors.Default} captured the zone! Score: CT {_ctScore} - T {_tScore}");
+                Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Orange}{team}{ChatColors.Default} captured the zone! Score: {ChatColors.Blue}CT{ChatColors.Default} {_ctScore} - {ChatColors.Red}T{ChatColors.Default} {_tScore}");
 
                 // Check for game end
                 if (_ctScore >= WINNING_SCORE)
@@ -4028,7 +4028,7 @@ namespace Lockpoint
             
             commandInfo.ReplyToCommand($"{ChatColors.Green}{message}{ChatColors.Default}");
             Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Yellow}{message}{ChatColors.Default}");
-            Server.PrintToConsole($"[Lockpoint] Applied {preset} preset by {(player?.PlayerName ?? "Server")}");
+            Server.PrintToConsole($"[Lockpoint] Applied {preset} preset by {(player?.PlayerName ?? "Server")}.");
         }
         #endregion
     }
