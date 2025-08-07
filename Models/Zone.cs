@@ -24,7 +24,7 @@ namespace Lockpoint.Models
 
         public bool IsPlayerInZone(CSVector playerPos)
         {
-            return IsPointInPolygon(playerPos, Points);
+            return IsPointInPolygonWithBuffer(playerPos.X, playerPos.Y, Points, 32.0f);
         }
 
         public void CleanupInvalidPlayers()
@@ -105,23 +105,83 @@ namespace Lockpoint.Models
             }
         }
 
-        private bool IsPointInPolygon(CSVector point, List<CSVector> polygon)
+        private bool IsPointInPolygonWithBuffer(float x, float y, List<CSVector> polygon, float buffer = 32.0f)
         {
-            if (polygon.Count < 3) return false;
-
-            bool inside = false;
-            int j = polygon.Count - 1;
-
-            for (int i = 0; i < polygon.Count; i++)
+            // First check if point is inside the polygon normally
+            if (IsPointInPolygon(x, y, polygon))
             {
-                if (((polygon[i].Y > point.Y) != (polygon[j].Y > point.Y)) &&
-                    (point.X < (polygon[j].X - polygon[i].X) * (point.Y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X))
-                {
-                    inside = !inside;
-                }
-                j = i;
+                return true;
             }
-            return inside;
+
+            // If not inside, check if point is within buffer distance of any edge
+            return IsPointNearPolygonEdge(x, y, polygon, buffer);
+        }
+
+        private bool IsPointInPolygon(float x, float y, List<CSVector> polygon)
+        {
+            int intersections = 0;
+            int vertexCount = polygon.Count;
+
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int j = (i + 1) % vertexCount;
+
+                if (((polygon[i].Y > y) != (polygon[j].Y > y)) &&
+                    (x < (polygon[j].X - polygon[i].X) * (y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X))
+                {
+                    intersections++;
+                }
+            }
+
+            return (intersections % 2) == 1;
+        }
+
+        private bool IsPointNearPolygonEdge(float x, float y, List<CSVector> polygon, float buffer)
+        {
+            int vertexCount = polygon.Count;
+
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int j = (i + 1) % vertexCount;
+
+                var p1 = polygon[i];
+                var p2 = polygon[j];
+
+                float distance = DistanceFromPointToLineSegment(x, y, p1.X, p1.Y, p2.X, p2.Y);
+
+                if (distance <= buffer)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private float DistanceFromPointToLineSegment(float px, float py, float x1, float y1, float x2, float y2)
+        {
+            float dx = px - x1;
+            float dy = py - y1;
+
+            float lineX = x2 - x1;
+            float lineY = y2 - y1;
+
+            float lineLengthSquared = lineX * lineX + lineY * lineY;
+
+            if (lineLengthSquared == 0)
+            {
+                return (float)Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            float t = Math.Max(0, Math.Min(1, (dx * lineX + dy * lineY) / lineLengthSquared));
+
+            float closestX = x1 + t * lineX;
+            float closestY = y1 + t * lineY;
+
+            float distX = px - closestX;
+            float distY = py - closestY;
+
+            return (float)Math.Sqrt(distX * distX + distY * distY);
         }
     }
 

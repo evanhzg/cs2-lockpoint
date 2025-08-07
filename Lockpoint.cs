@@ -70,6 +70,8 @@ namespace Lockpoint
         private const float TIMER_INTERVAL = 100f; // Back to 100ms
         private const float HUD_UPDATE_INTERVAL = 50f; // Update HUD every 500ms instead of every timer tick
         private const int WINNING_SCORE = 3; // First team to 3 captures wins
+        private const float ZONE_DETECTION_BUFFER = 8.0f; // Buffer for zone edge detection in units
+
         private bool _waitingForNewZone = false;
         private DateTime _zoneResetTime;
         private string _lastCaptureTeam = "";
@@ -625,13 +627,25 @@ namespace Lockpoint
             try
             {
                 var playerPos = player.PlayerPawn.Value.AbsOrigin;
-                return IsPointInPolygon(playerPos.X, playerPos.Y, zone.Points);
+                return IsPointInPolygonWithBuffer(playerPos.X, playerPos.Y, zone.Points, ZONE_DETECTION_BUFFER);
             }
             catch (Exception ex)
             {
                 Server.PrintToConsole($"[Lockpoint] Error checking if player {player.PlayerName} is in zone: {ex.Message}");
                 return false;
             }
+        }
+
+        private bool IsPointInPolygonWithBuffer(float x, float y, List<CSVector> polygon, float buffer = 32.0f)
+        {
+            // First check if point is inside the polygon normally
+            if (IsPointInPolygon(x, y, polygon))
+            {
+                return true;
+            }
+
+            // If not inside, check if point is within buffer distance of any edge
+            return IsPointNearPolygonEdge(x, y, polygon, buffer);
         }
 
         private bool IsPointInPolygon(float x, float y, List<CSVector> polygon)
@@ -651,6 +665,64 @@ namespace Lockpoint
             }
 
             return (intersections % 2) == 1;
+        }
+
+        private bool IsPointNearPolygonEdge(float x, float y, List<CSVector> polygon, float buffer)
+        {
+            int vertexCount = polygon.Count;
+
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int j = (i + 1) % vertexCount;
+
+                // Get the two points that form this edge
+                var p1 = polygon[i];
+                var p2 = polygon[j];
+
+                // Calculate distance from point to line segment
+                float distance = DistanceFromPointToLineSegment(x, y, p1.X, p1.Y, p2.X, p2.Y);
+
+                if (distance <= buffer)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Add this helper method to calculate distance from point to line segment
+        private float DistanceFromPointToLineSegment(float px, float py, float x1, float y1, float x2, float y2)
+        {
+            // Vector from line start to point
+            float dx = px - x1;
+            float dy = py - y1;
+
+            // Vector of the line segment
+            float lineX = x2 - x1;
+            float lineY = y2 - y1;
+
+            // Length squared of the line segment
+            float lineLengthSquared = lineX * lineX + lineY * lineY;
+
+            // If line segment has zero length, return distance to point
+            if (lineLengthSquared == 0)
+            {
+                return (float)Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            // Calculate the projection of the point onto the line
+            float t = Math.Max(0, Math.Min(1, (dx * lineX + dy * lineY) / lineLengthSquared));
+
+            // Find the closest point on the line segment
+            float closestX = x1 + t * lineX;
+            float closestY = y1 + t * lineY;
+
+            // Calculate distance from point to closest point on line segment
+            float distX = px - closestX;
+            float distY = py - closestY;
+
+            return (float)Math.Sqrt(distX * distX + distY * distY);
         }
 
         private void CheckGameEndCondition()
