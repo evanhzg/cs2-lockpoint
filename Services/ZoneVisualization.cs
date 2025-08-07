@@ -17,6 +17,7 @@ namespace Lockpoint.Services
         private Zone? _currentSpawnZone = null;
         private bool _isEditMode = false;
         private Zone? _editingZone = null;
+        private readonly Dictionary<Zone, ZoneState> _lastZoneStates = new();
 
         public void SetEditMode(bool editMode, Zone? editingZone = null)
         {
@@ -85,51 +86,24 @@ namespace Lockpoint.Services
             }
         }
 
-        public void UpdateZoneColor(Zone zone, ZoneState zoneState)
+        private Color GetColorForState(ZoneState state)
         {
-            if (!zoneBeams.ContainsKey(zone) || zoneBeams[zone].Count == 0)
+            return state switch
             {
-                Server.PrintToConsole($"[ZoneVisualization] No beams found for zone '{zone.Name}' to update color");
+                ZoneState.CTControlled => Color.FromArgb(255, 0, 100, 255), // Blue for CT
+                ZoneState.TControlled => Color.FromArgb(255, 255, 0, 0),    // Red for T
+                ZoneState.Contested => Color.FromArgb(255, 128, 0, 128),    // Purple for contested
+                ZoneState.Neutral => Color.FromArgb(255, 0, 255, 0),        // Green for neutral
+                _ => Color.FromArgb(255, 255, 255, 255)                     // White for unknown
+            };
+        }
+
+        // Also add the missing DrawZoneBeams method that's called in UpdateZoneColor:
+        private void DrawZoneBeams(Zone zone, Color color)
+        {
+            if (zone?.Points == null || zone.Points.Count < 3)
                 return;
-            }
 
-            Color newColor;
-
-            // If in edit mode and this is the editing zone, always yellow
-            if (_isEditMode && _editingZone == zone)
-            {
-                newColor = Color.FromArgb(255, 255, 255, 0); // Yellow for editing
-                Server.PrintToConsole($"[ZoneVisualization] Updating zone '{zone.Name}' to YELLOW (edit mode)");
-            }
-            else
-            {
-                // Change color based on zone state during gameplay
-                switch (zoneState)
-                {
-                    case ZoneState.CTControlled:
-                        newColor = Color.FromArgb(255, 0, 100, 255); // Blue for CT control
-                        Server.PrintToConsole($"[ZoneVisualization] Updating zone '{zone.Name}' to BLUE (CT controlled)");
-                        break;
-                    case ZoneState.TControlled:
-                        newColor = Color.FromArgb(255, 255, 50, 0); // Red for T control
-                        Server.PrintToConsole($"[ZoneVisualization] Updating zone '{zone.Name}' to RED (T controlled)");
-                        break;
-                    case ZoneState.Contested:
-                        newColor = Color.FromArgb(255, 255, 165, 0); // Orange for contested
-                        Server.PrintToConsole($"[ZoneVisualization] Updating zone '{zone.Name}' to ORANGE (contested)");
-                        break;
-                    case ZoneState.Neutral:
-                    default:
-                        newColor = Color.FromArgb(255, 0, 255, 0); // Green for neutral
-                        Server.PrintToConsole($"[ZoneVisualization] Updating zone '{zone.Name}' to GREEN (neutral)");
-                        break;
-                }
-            }
-
-            // Clear existing beams
-            ClearZoneBeams(zone);
-
-            // Redraw with new color
             var beams = new List<CBeam>();
 
             // Draw lines connecting all points in sequence, including closing the loop
@@ -138,7 +112,7 @@ namespace Lockpoint.Services
                 var currentPoint = zone.Points[i];
                 var nextPoint = zone.Points[(i + 1) % zone.Points.Count]; // Wrap around to first point
 
-                var beam = CreateBorderBeam(currentPoint, nextPoint, newColor);
+                var beam = CreateBorderBeam(currentPoint, nextPoint, color);
                 if (beam != null)
                 {
                     beams.Add(beam);
@@ -148,13 +122,66 @@ namespace Lockpoint.Services
             if (beams.Count > 0)
             {
                 zoneBeams[zone] = beams;
-                Server.PrintToConsole($"[ZoneVisualization] Redrawn zone '{zone.Name}' with {beams.Count} beams in new color for state {zoneState}");
-            }
-            else
-            {
-                Server.PrintToConsole($"[ZoneVisualization] Failed to redraw zone '{zone.Name}' with new color");
+                Server.PrintToConsole($"[ZoneVisualization] Redrawn zone '{zone.Name}' with {beams.Count} beams in new color for state {GetStateText(zone)}");
             }
         }
+
+        // And add this helper method for cleaner logging:
+        private string GetStateText(Zone zone)
+        {
+            if (!_lastZoneStates.TryGetValue(zone, out var state))
+                return "Unknown";
+                
+            return state switch
+            {
+                ZoneState.CTControlled => "CT Controlled",
+                ZoneState.TControlled => "T Controlled", 
+                ZoneState.Contested => "Contested",
+                ZoneState.Neutral => "Neutral",
+                _ => "Unknown"
+            };
+        }
+
+        public void UpdateZoneColor(Zone zone, ZoneState state)
+        {
+            if (zone?.Points == null || zone.Points.Count < 3)
+                return;
+
+            // Only update and log if the state has actually changed
+            if (_lastZoneStates.TryGetValue(zone, out var lastState) && lastState == state)
+            {
+                return; // No change, don't update or log
+            }
+
+            _lastZoneStates[zone] = state;
+
+            try
+            {
+                var color = GetColorForState(state);
+                var stateText = state switch
+                {
+                    ZoneState.CTControlled => "BLUE (CT controlling)",
+                    ZoneState.TControlled => "RED (T controlling)", 
+                    ZoneState.Contested => "PURPLE (contested)",
+                    ZoneState.Neutral => "GREEN (neutral)",
+                    _ => "UNKNOWN"
+                };
+
+                // Clear existing beams for this zone
+                ClearZoneBeams(zone);
+
+                // Draw new beams with the correct color
+                DrawZoneBeams(zone, color);
+
+                // ONLY log when state actually changes
+                Server.PrintToConsole($"[ZoneVisualization] Zone '{zone.Name}' state changed to {stateText}");
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error updating zone color: {ex.Message}");
+            }
+        }
+
 
         private CBeam? CreateGroundBeam(CSVector position, Color color)
         {
@@ -365,23 +392,40 @@ namespace Lockpoint.Services
 
         public void ClearZoneVisualization()
         {
-            // Clear all zone beams
-            foreach (var beamList in zoneBeams.Values)
+            try
             {
-                foreach (var beam in beamList)
+                // Clear all zone beams
+                foreach (var beamList in zoneBeams.Values)
                 {
-                    if (beam?.IsValid == true)
+                    foreach (var beam in beamList)
                     {
-                        beam.Remove();
+                        if (beam?.IsValid == true)
+                        {
+                            beam.Remove();
+                        }
                     }
                 }
+                zoneBeams.Clear();
+                
+                // Clear state tracking
+                _lastZoneStates.Clear();
+
+                // Clear spawn point beams
+                foreach (var spawnBeam in spawnBeams.ToList())
+                {
+                    spawnBeam?.Remove();
+                }
+                spawnBeams.Clear();
+
+                // Clear current spawn zone reference
+                _currentSpawnZone = null;
+
+                Server.PrintToConsole("[ZoneVisualization] Cleared all zone visualizations and state tracking");
             }
-            zoneBeams.Clear();
-
-            // Also clear spawn points
-            ClearSpawnPoints();
-
-            Server.PrintToConsole("[ZoneVisualization] Cleared all zone visualizations");
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"[ZoneVisualization] Error clearing visualization: {ex.Message}");
+            }
         }
 
         public void ClearEditMode()

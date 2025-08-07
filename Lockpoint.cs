@@ -42,7 +42,7 @@ namespace Lockpoint
         private float _zoneEmptyTime = 0f; // Track how long zone has been empty
         private const float ZONE_DECAY_DELAY = 5.0f; // 5 seconds before decay starts
         private bool _zoneWasOccupied = false; // Track if zone was previously occupied
-
+        private ZoneState _lastZoneState = ZoneState.Neutral;
         private Zone? _zoneBeingEdited = null;
         private bool _isEditingExistingZone = false;
         private ZoneVisualization? _zoneVisualization;
@@ -754,7 +754,7 @@ namespace Lockpoint
                 activeZone = null;
 
                 // Set end game message for HUD
-                _gameEndMessage = $"🏆 {winningTeam} WINS! 🏆\nFinal Score: CT {_ctScore} - T {_tScore}\nReturning to warmup...";
+                _gameEndMessage = $"🏆 {winningTeam} WINS! 🏆\nFinal Score:{ChatColors.Blue} CT {_ctScore}{ChatColors.Default} -{ChatColors.Red} T{ChatColors.Default} {_tScore}\nReturning to warmup in a few seconds...";
 
                 // Announce winner
                 Server.PrintToChatAll($"{ChatColors.Green}[Lockpoint]{ChatColors.Default} - {ChatColors.Blue}{winningTeam} WINS!{ChatColors.Default} Final Score: CT {_ctScore} - T {_tScore}");
@@ -772,7 +772,7 @@ namespace Lockpoint
                         _zoneEmptyTime = 0f;
                         _zoneWasOccupied = false;
                         _gameEndMessage = "";
-
+                        RespawnAllPlayers();
                         Server.PrintToChatAll($"{ChatColors.Yellow}[Lockpoint]{ChatColors.Default} - Returned to warmup phase");
                     });
                 });
@@ -948,8 +948,13 @@ namespace Lockpoint
 
                     var zoneState = activeZone.GetZoneState();
 
-                    // Update zone color based on current state
-                    _zoneVisualization?.UpdateZoneColor(activeZone, zoneState);
+                    // Only update zone color if the state has actually changed
+                    if (zoneState != _lastZoneState)
+                    {
+                        _zoneVisualization?.UpdateZoneColor(activeZone, zoneState);
+                        _lastZoneState = zoneState;
+                        Server.PrintToConsole($"[Lockpoint] Zone {activeZone.Name} state changed to {zoneState}");
+                    }
 
                     switch (zoneState)
                     {
@@ -1520,11 +1525,12 @@ namespace Lockpoint
                 activeZone = selectedZone;
                 activeZone.PlayersInZone.Clear();
 
-                // Reset capture times
+                // Reset capture times and state tracking
                 _ctZoneTime = 0f;
                 _tZoneTime = 0f;
                 _zoneEmptyTime = 0f;
                 _zoneWasOccupied = false;
+                _lastZoneState = ZoneState.Neutral; // Reset state tracking
 
                 // Draw the zone
                 _zoneVisualization?.DrawZone(activeZone);
@@ -1559,6 +1565,9 @@ namespace Lockpoint
 
                 if (activeZone != null)
                 {
+                    // Reset state tracking for the new zone
+                    _lastZoneState = ZoneState.Neutral;
+                    
                     _zoneVisualization?.DrawZone(activeZone);
                     // This is the ONLY message that should appear after the 5-second wait
                     Server.PrintToChatAll($"{ChatColors.Yellow}📍 New Lockpoint: {ChatColors.Green}{activeZone.Name}{ChatColors.Default}");
@@ -1660,8 +1669,7 @@ namespace Lockpoint
                         var currentPlayerCount = activeZone.PlayersInZone.Count;
 
                         // Update zone color if state changed OR if player count changed
-                        if (currentState != previousState ||
-                            currentPlayerCount != previousPlayerCount)
+                        if (currentState != previousState)
                         {
                             try
                             {
@@ -2842,7 +2850,6 @@ namespace Lockpoint
                     {
                         var random = new Random();
                         var spawnPoint = availableSpawns[random.Next(availableSpawns.Count)];
-                        Server.PrintToConsole($"[Lockpoint] Using zone-based spawn for team {teamNum} in zone {activeZone.Name}");
                         return new Vector(spawnPoint.Position.X, spawnPoint.Position.Y, spawnPoint.Position.Z);
                     }
                     else
